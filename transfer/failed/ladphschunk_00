@@ -1,0 +1,100 @@
+From 47bd90c9cf2945c990dbc9e36dd9634f2ed438e9 Mon Sep 17 00:00:00 2001
+From: Vibe <vibe@localhost>
+Date: Mon, 23 Nov 2026 15:30:50 +0000
+Subject: [PATCH] Port foliar LAD params to phsdata::UnderstoryMulti (lad,
+ dimFoliar, hotSpot, clumping, conditional LAD children);
+ computeLadDataForModel reads the struct, DAO
+ readCoeffDiffParametersForFoliar{,XML} deleted; CONTEXT.md item 19
+
+---
+ CONTEXT.md                                    | 18 ++++-
+ Phase/include/Phase.hpp                       |  1 +
+ Phase/include/PhaseDAO.hpp                    | 14 ----
+ .../vegetation/UnderstoryMulti.hpp            | 48 ++++++++++++++++
+ Phase/src/Phase.cpp                           | 59 ++++++++++-------
+ Phase/src/PhaseDAO.cpp                        | 66 -------------------
+ .../materials/VegetationMaterialWriter.cpp    |  2 +-
+ 7 files changed, 100 insertions(+), 108 deletions(-)
+
+diff --git a/CONTEXT.md b/CONTEXT.md
+index b646b1b..f783c4e 100644
+--- a/CONTEXT.md
++++ b/CONTEXT.md
+@@ -202,6 +202,17 @@ Sandbox notes for rebuilding the prefix (no root available):
+     parameters (and the LADComputation include) were dropped from both
+     functions; behavior unchanged (same model, same parameters, single-slot
+     LAD vectors).
++19. Foliar LAD params ported to phsdata (this session, templates in
++    Phase/inputTest/XMLTemplate v5+v6 used as the exhaustive reference):
++    phsdata::UnderstoryMulti now loads lad, dimFoliar, thermalHotSpotFactor,
++    DirectionalClumpingIndexProperties (clumpinga/clumpingb/omegaMin/omegaMax)
++    and the conditional LAD children (Ellipsoidal.ala, Elliptical.thetam/
++    epsilon, BoundedUniform.nbAla/nthAla, UserDefined.fileName,
++    Manual.lad_m/lad_b0/lad_b1/lad_b2) via exists() guards.
++    computeLadDataForModel() now takes the UnderstoryMulti and copies these
++    into the per-model FoliarModel params (no PhaseDAO read); the DAO functions
++    readCoeffDiffParametersForFoliar{,XML} are deleted. v5->v6 renames handled
++    by the external XML upgrader, not here.
+ 
+ ## Known TODOs / open points (next sessions)
+ 
+@@ -226,9 +237,10 @@ Sandbox notes for rebuilding the prefix (no root available):
+   loops the UnderstoryMulti models grouped by DirectionSetLink and redoes the
+   direction-set-dependent precomputing only on change; output model index is
+   UnderstoryMulti::indexFunction.
+-- Port the remaining foliar PhaseDAO reads into phsdata::UnderstoryMulti
+-  (later round): readCoeffDiffParametersForFoliar (LAD params),
+-  readMultiplicativeFactorFoliar (UnderstoryNodeMultiplicativeFactorForLUT),
++- Port the remaining foliar PhaseDAO reads into phsdata::UnderstoryMulti:
++  readCoeffDiffParametersForFoliar (LAD params) DONE (history item 19);
++  still to do: readMultiplicativeFactorFoliar
++  (UnderstoryNodeMultiplicativeFactorForLUT),
+   readCoeffDiffParametersForFoliarOpticalFactors.
+ - Remove the redundant per-band LAD recompute inside
+   PhasePolarization::computeAndWriteFoliarPolarizationMatrix{,NotBinary}:
+diff --git a/Phase/include/Phase.hpp b/Phase/include/Phase.hpp
+index d9cd876..b8b534a 100644
+--- a/Phase/include/Phase.hpp
++++ b/Phase/include/Phase.hpp
+@@ -407,6 +407,7 @@ FTFoliar foliarPrecomputing(	const PhaseGeneralParametersDTO & genDTO,
+ void computeLadDataForModel(const PhaseGeneralParametersDTO & genDTO,
+                LADComputation & ladComputation,
+                FoliarModel & foliarModel,
++				const phsdata::UnderstoryMulti & understory,
+                const unsigned int & foliarModelIndice,
+                const unsigned int & outputModelIndex);
+ 
+diff --git a/Phase/include/PhaseDAO.hpp b/Phase/include/PhaseDAO.hpp
+index 914a616..fb15c52 100644
+--- a/Phase/include/PhaseDAO.hpp
++++ b/Phase/include/PhaseDAO.hpp
+@@ -306,20 +306,6 @@ public:
+                                std::string & material2Name,
+                                double & percentOfMaterial1);
+ 
+-	static bool readCoeffDiffParametersForFoliar(	const unsigned int & foliarModelIndice,
+-								double &m,
+-								double &b0,
+-								double &b1,
+-								double &b2,
+-								std::string& nameDatabaseLAD,
+-								FoliarModel & foliarModel);
+-	static bool readCoeffDiffParametersForFoliarXML(const unsigned int & foliarModelIndice,
+-								double &m,
+-								double &b0,
+-								double &b1,
+-								double &b2,
+-								std::string& nameDatabaseLAD,
+-								FoliarModel & foliarModel);
+    static bool readFoliarMultiplicativeFactorForModelXML(	const string & temp,
+                                const string & modelKey,
+                                const bool & isBottomFace,
+diff --git a/Phase/include/inputs/storage/opticalMaterials/vegetation/UnderstoryMulti.hpp b/Phase/include/inputs/storage/opticalMaterials/vegetation/UnderstoryMulti.hpp
+index 0c58ffd..1864269 100644
+--- a/Phase/include/inputs/storage/opticalMaterials/vegetation/UnderstoryMulti.hpp
++++ b/Phase/include/inputs/storage/opticalMaterials/vegetation/UnderstoryMulti.hpp
+@@ -22,6 +22,23 @@ public:
+    std::string functionName = "undefined";
+    unsigned int indexFunction = 0;
+ 
++	int lad = 0; // type of leaf angle distribution (values per the v6 template: 8=Ellipsoidal, 9=Elliptical, 10=UserDefined, 11=Manual, 12=BoundedUniform, ...)

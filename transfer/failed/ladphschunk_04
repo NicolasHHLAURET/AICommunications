@@ -1,0 +1,50 @@
+-		foliarModel.setFoliarDimension(foliarModelindice, tempDouble);
+-		DartSAParameters::get(temp + "thermalHotSpotFactor\", tempDouble);
+-		foliarModel.setHotSpotFactor(foliarModelindice, tempDouble);
+-		if (tempInt == globalReferences::ELLIPS) {
+-			DartSAParameters::get(temp + \"Ellipsoidal.ala\", tempDouble);
+-			foliarModel.setFoliarAverageLeafAngle(foliarModelindice, tempDouble);
+-		} else if (tempInt == globalReferences::ELLIPT) {
+-			DartSAParameters::get(temp + \"Elliptical.thetam\", tempDouble);
+-			foliarModel.setFoliarEllipsePrincipalAngle(foliarModelindice, tempDouble);
+-			DartSAParameters::get(temp + \"Elliptical.epsilon\", tempDouble);
+-			foliarModel.setFoliarEllipseEccentricity(foliarModelindice, tempDouble);
+-		} else if (tempInt == globalReferences::BOUNDEDUNI) {
+-			DartSAParameters::get(temp + \"BoundedUniform.nbAla\", tempInt);
+-			foliarModel.setNumberOfAla(foliarModelindice, tempInt);
+-//			cout << \"read nbALA: \" << tempInt << endl;
+-			DartSAParameters::get(temp + \"BoundedUniform.nthAla\", tempInt);
+-			foliarModel.setNthAla(foliarModelindice, tempInt);
+-		} else if (tempInt == globalReferences::USERDEFINED) {
+-			DartSAParameters::get(temp + \"UserDefined.fileName\", nameDatabaseLAD);
+-		} else if (tempInt == globalReferences::MANUAL) {
+-			DartSAParameters::get(temp + \"Manual.LAD_m\", m);
+-			DartSAParameters::get(temp + \"Manual.LAD_b0\", b0);
+-			DartSAParameters::get(temp + \"Manual.LAD_b1\", b1);
+-			DartSAParameters::get(temp + \"Manual.LAD_b2\", b2);
+-		}
+-	} catch (DartException &E) {
+-		cerr << E.getOriginMessage() << endl;
+-		return false;
+-	}
+-	return true;
+-}
+ 
+ bool PhaseDAO::readMultiplicativeFactorLambertien(const PhaseGeneralParametersDTO & genDTO) {
+    return readMultiplicativeFactorLambertienXML();
+diff --git a/Phase/src/materials/VegetationMaterialWriter.cpp b/Phase/src/materials/VegetationMaterialWriter.cpp
+index dddf0aa..8141d46 100644
+--- a/Phase/src/materials/VegetationMaterialWriter.cpp
++++ b/Phase/src/materials/VegetationMaterialWriter.cpp
+@@ -101,7 +101,7 @@ bool VegetationMaterialWriter::treat(	const phsdata::UnderstoryMulti & understor
+ 	// angle distribution into the single-slot LAD vectors (no other model's LAD
+ 	// data is stored). Must run before the getFoliarTypeOfLeafAngleDistribution()
+ 	// reads below (the ELLIPS/ALA==0 case rewrites the type to HORIZ).
+-	computeLadDataForModel(genDTO, ladComputation, foliarModel, foliarIndice, modelIndex);
++	computeLadDataForModel(genDTO, ladComputation, foliarModel, understory, foliarIndice, modelIndex);
+ 
+ 	vector<FoliarProperty> foliarProperty;
+ 	foliarProperty.resize(genDTO.numberOfSpectralBands);
+-- 
+2.47.3
+
