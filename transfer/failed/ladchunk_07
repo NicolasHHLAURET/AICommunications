@@ -1,0 +1,100 @@
+        }
+        for (double theta_f = 0.5; theta_f <= 90; theta_f++) {
+-			_gFunctionForLadComputationFunctionVector[modelIndex][2 * theta_f] = PhaseUtils::getStaticSine(2 * theta_f)
++			_gFunctionForLadComputationFunctionVector[2 * theta_f] = PhaseUtils::getStaticSine(2 * theta_f)
+                * computeEllipsoidalLadWithPrecompute(theta_f, alaInRad);
+        }
+-		testNormalisation(modelIndex);
+-		normalizeLeafAngleDistribution(modelIndex);
++		testNormalisation();
++		normalizeLeafAngleDistribution();
+    }
+ }
+ 
+-void LADComputation::computeVerticalHorizontalLadDistribution(	const unsigned int & modelIndex,
+-												const int specifiedAngle) {
++void LADComputation::computeVerticalHorizontalLadDistribution(const int specifiedAngle) {
+    for (unsigned int i = 0; i < NBMAX_TETAF; i++) {
+-		_leafAngleDistributionFunctionVector[modelIndex][i] = 0.0;
+-		_gFunctionForLadComputationFunctionVector[modelIndex][2 * i] = 0;
+-		_gFunctionForLadComputationFunctionVector[modelIndex][2 * i + 1] = 0;
++		_leafAngleDistributionFunctionVector[i] = 0.0;
++		_gFunctionForLadComputationFunctionVector[2 * i] = 0;
++		_gFunctionForLadComputationFunctionVector[2 * i + 1] = 0;
+    }
+-	_gFunctionForLadComputationFunctionVector[modelIndex][180] = 0;
+-	_leafAngleDistributionFunctionVector[modelIndex][90] = 0;
+-	_leafAngleDistributionFunctionVector[modelIndex][specifiedAngle] = 1080. / M_PI;
+-	_gFunctionForLadComputationFunctionVector[modelIndex][2 * specifiedAngle] = 1080. / M_PI;
+-	testNormalisation(modelIndex);
+-	normalizeLeafAngleDistribution(modelIndex);
++	_gFunctionForLadComputationFunctionVector[180] = 0;
++	_leafAngleDistributionFunctionVector[90] = 0;
++	_leafAngleDistributionFunctionVector[specifiedAngle] = 1080. / M_PI;
++	_gFunctionForLadComputationFunctionVector[2 * specifiedAngle] = 1080. / M_PI;
++	testNormalisation();
++	normalizeLeafAngleDistribution();
+ }
+ 
+-void LADComputation::computeBoundedUniformLadDistribution(	const unsigned int & modelIndex,
+-												const int & numberOfAla,
++void LADComputation::computeBoundedUniformLadDistribution(const int & numberOfAla,
+                                const int & nthAla) {
+    for (unsigned int angle = 0; angle <= 90; angle++) {
+-		_leafAngleDistributionFunctionVector[modelIndex][angle] = computeBoundedUniformLad(angle, numberOfAla, nthAla);
+-		_gFunctionForLadComputationFunctionVector[modelIndex][2 * angle] = _leafAngleDistributionFunctionVector[modelIndex][angle];
++		_leafAngleDistributionFunctionVector[angle] = computeBoundedUniformLad(angle, numberOfAla, nthAla);
++		_gFunctionForLadComputationFunctionVector[2 * angle] = _leafAngleDistributionFunctionVector[angle];
+    }
+    for (double theta_f = 0.5; theta_f <= 90; theta_f++) {
+ 
+-		_gFunctionForLadComputationFunctionVector[modelIndex][2 * theta_f] = computeBoundedUniformLad(theta_f, numberOfAla, nthAla);
++		_gFunctionForLadComputationFunctionVector[2 * theta_f] = computeBoundedUniformLad(theta_f, numberOfAla, nthAla);
+    }
+-	testNormalisation(modelIndex);
+-	normalizeLeafAngleDistribution(modelIndex);
++	testNormalisation();
++	normalizeLeafAngleDistribution();
+ }
+ 
+-void LADComputation::computeClassicalLadDistribution(	const unsigned int & modelIndex,
+-												const double & m,
++void LADComputation::computeClassicalLadDistribution(const double & m,
+                                const double & b0,
+                                const double & b1,
+                                const double & b2) {
+ 
+    double a = normalisationFactor(b1, b2, b0, m);
+    for (unsigned int theta = 0; theta <= 90; theta++) {
+-		_leafAngleDistributionFunctionVector[modelIndex][theta] = PhaseUtils::getStaticSine(2 * theta)
++		_leafAngleDistributionFunctionVector[theta] = PhaseUtils::getStaticSine(2 * theta)
+                * computeClassicalLadWithA(theta, m, b0, b1, b2, a);
+-		_gFunctionForLadComputationFunctionVector[modelIndex][2 * theta] = _leafAngleDistributionFunctionVector[modelIndex][theta];
++		_gFunctionForLadComputationFunctionVector[2 * theta] = _leafAngleDistributionFunctionVector[theta];
+    }
+    for (double theta_f = 0.5; theta_f <= 90; theta_f += 0.5) {
+-		_gFunctionForLadComputationFunctionVector[modelIndex][2 * theta_f] = PhaseUtils::getStaticSine(2 * theta_f)
++		_gFunctionForLadComputationFunctionVector[2 * theta_f] = PhaseUtils::getStaticSine(2 * theta_f)
+                * computeClassicalLadWithA(theta_f, m, b0, b1, b2, a);
+    }
+-	normalizeLeafAngleDistribution(modelIndex);
+-	testNormalisation(modelIndex);
++	normalizeLeafAngleDistribution();
++	testNormalisation();
+ }
+ 
+-void LADComputation::computeEllipticalLadDistribution(	const unsigned int & modelIndex,
+-												const double & thetaM,
++void LADComputation::computeEllipticalLadDistribution(const double & thetaM,
+                                const double & eccentricity) {
+    if (eccentricity > 1)
+        std::cout << "error eccentricity > 1" << std::endl;
+    else {
+        for (unsigned int angle = 0; angle <= 90; angle++) {
+-			_leafAngleDistributionFunctionVector[modelIndex][angle] = PhaseUtils::getStaticSine(2 * angle)
++			_leafAngleDistributionFunctionVector[angle] = PhaseUtils::getStaticSine(2 * angle)
+                * computeEllipticalLad(angle, thetaM, eccentricity);
+-			_gFunctionForLadComputationFunctionVector[modelIndex][2 * angle] = _leafAngleDistributionFunctionVector[modelIndex][angle];
++			_gFunctionForLadComputationFunctionVector[2 * angle] = _leafAngleDistributionFunctionVector[angle];
+        }
+        for (double theta_f = 0.5; theta_f <= 90; theta_f++) {

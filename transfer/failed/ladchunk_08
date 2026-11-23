@@ -1,0 +1,100 @@
+ 
+-			_gFunctionForLadComputationFunctionVector[modelIndex][2 * theta_f] = PhaseUtils::getStaticSine(2 * theta_f)
++			_gFunctionForLadComputationFunctionVector[2 * theta_f] = PhaseUtils::getStaticSine(2 * theta_f)
+                * computeEllipticalLad(theta_f, thetaM, eccentricity);
+        }
+-		testNormalisation(modelIndex);
+-		normalizeLeafAngleDistribution(modelIndex);
++		testNormalisation();
++		normalizeLeafAngleDistribution();
+    }
+ }
+ 
+-void LADComputation::readLadFile(	const std::string & leadAngleDistributionFilename,
+-								const unsigned int & modelIndex) {
++void LADComputation::readLadFile(	const std::string & leadAngleDistributionFilename) {
+    std::ifstream IN;
+    IN.open(leadAngleDistributionFilename.c_str());
+    double angle = 0;
+@@ -117,18 +110,17 @@ void LADComputation::readLadFile(	const std::string & leadAngleDistributionFilen
+        IN >> angle;
+        IN >> gValue;
+        if (i % 2 == 0) {
+-			_leafAngleDistributionFunctionVector[modelIndex][int(i * 0.5)] = gValue;
++			_leafAngleDistributionFunctionVector[int(i * 0.5)] = gValue;
+        }
+-		_gFunctionForLadComputationFunctionVector[modelIndex][i] = gValue;
++		_gFunctionForLadComputationFunctionVector[i] = gValue;
+    }
+ 
+    IN.close();
+-	normalizeLeafAngleDistribution(modelIndex);
+-	testNormalisation(modelIndex);
++	normalizeLeafAngleDistribution();
++	testNormalisation();
+ }
+ 
+-void LADComputation::writeLadFile(	std::string & leadAngleDistributionFilename,
+-								const unsigned int & modelIndex) {
++void LADComputation::writeLadFile(	std::string & leadAngleDistributionFilename) {
+    std::ofstream writeOutput;
+    writeOutput.open(leadAngleDistributionFilename.c_str());
+    writeOutput.precision(20);
+@@ -138,14 +130,13 @@ void LADComputation::writeLadFile(	std::string & leadAngleDistributionFilename,
+    writeOutput << std::endl;
+    for (int i = 0; i <= 180; i++) {
+        writeOutput << i * 0.5 << " ";
+-		writeOutput << _gFunctionForLadComputationFunctionVector[modelIndex][i] << " ";
++		writeOutput << _gFunctionForLadComputationFunctionVector[i] << " ";
+        writeOutput << std::endl;
+    }
+    writeOutput.close();
+ }
+ 
+-void LADComputation::getLadFile(const int & numberTypeOfLad,
+-								const unsigned int & modelIndex) {
++void LADComputation::getLadFile(const int & numberTypeOfLad) {
+    std::string leadAngleDistributionFilename = DartEnv::getLocalHomePath() + "database/LAD_";
+    std::string ladName = "";
+    if (numberTypeOfLad == globalReferences::UNIFORM) {
+@@ -166,10 +157,10 @@ void LADComputation::getLadFile(const int & numberTypeOfLad,
+    leadAngleDistributionFilename = leadAngleDistributionFilename + ladName + ".txt";
+    std::ifstream IN_LAD;
+    if (isFileReadableCheck(leadAngleDistributionFilename)) {
+-		readLadFile(leadAngleDistributionFilename, modelIndex);
++		readLadFile(leadAngleDistributionFilename);
+    } else {
+-		computeLeafAngleDistributionFromBunnick(modelIndex, numberTypeOfLad);
+-		writeLadFile(leadAngleDistributionFilename, modelIndex);
++		computeLeafAngleDistributionFromBunnick(numberTypeOfLad);
++		writeLadFile(leadAngleDistributionFilename);
+    }
+ }
+ 
+@@ -217,7 +208,7 @@ double LADComputation::computeEllipsoidalLadWithPrecompute(	const double & angle
+ }
+ 
+ void LADComputation::writeLad(	const unsigned int & modelIndex,
+-								std::ofstream & ofstreamLAD,
++								std::ofstream & ofstreamLAD,
+                                const int & numberTypeOfLad) {
+    std::stringstream modelIndexSS;
+    modelIndexSS << modelIndex;
+@@ -230,7 +221,7 @@ void LADComputation::writeLad(	const unsigned int & modelIndex,
+    ofstreamLAD.setf(std::ios::scientific);
+    if (ofstreamLAD) {
+        for (int i = 0; i < NBMAX_TETAF; i++) {
+-			ofstreamLAD << numberTypeOfLad << _tab_ << i << _space_ << _leafAngleDistributionFunctionVector[modelIndex][i] << std::endl;
++			ofstreamLAD << numberTypeOfLad << _tab_ << i << _space_ << _leafAngleDistributionFunctionVector[i] << std::endl;
+        }
+        ofstreamLAD.close();
+    } else {
+@@ -241,49 +232,47 @@ void LADComputation::writeLad(	const unsigned int & modelIndex,
+    }
+ }
+ 
+-void LADComputation::writeEllipticalLad(const unsigned int & modelIndex,
+-								std::ofstream & ofstreamElliptical) {
++void LADComputation::writeEllipticalLad(	std::ofstream & ofstreamElliptical) {
+    std::string fileName = DartEnv::getCurrentSimulationOutputPath() + PhaseUtils::getOutputFolder() + "/LAD_ELLIPT.txt";
+    ofstreamElliptical.open(fileName.c_str(), std::ofstream::app);

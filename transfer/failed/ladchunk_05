@@ -1,0 +1,100 @@
++		case globalReferences::ELLIPT:
++			ladComputation.computeEllipticalLadDistribution(foliarModel.getFoliarEllipsePrincipalAngle(foliarModelIndice),
++				foliarModel.getFoliarEllipseEccentricity(foliarModelIndice));
++			ladComputation.writeEllipticalLad(writeOutputElliptical);
++			break;
++		case globalReferences::HORIZ:
++			foliarModel.setFoliarTypeOfLeafAngleDistribution(foliarModelIndice, globalReferences::HORIZ);
++			ladComputation.computeVerticalHorizontalLadDistribution(0);
++			break;
++		case globalReferences::VERTI:
++			ladComputation.computeVerticalHorizontalLadDistribution(90);
++			break;
++		case globalReferences::MANUAL: // De Wit
++			ladComputation.computeClassicalLadDistribution(ladMParameter, labB0Parameter, ladB1Parameter, ladB2Parameter);
++			break;
++		case globalReferences::USERDEFINED:
++			ladFileName = DartEnv::getDatabasePath(nameDatabaseLAD) + nameDatabaseLAD;
++			ladComputation.readLadFile(ladFileName);
++			break;
++		default:
++			ladComputation.getLadFile(foliarModel.getFoliarTypeOfLeafAngleDistribution(foliarModelIndice));
++			break;
++	}
++	if (genDTO.isAskedForWritingLadResultsCheck == 1) {
++		ladComputation.writeLad(outputModelIndex, writeOutputLeafAngleDistribution,
++			foliarModel.getFoliarTypeOfLeafAngleDistribution(foliarModelIndice));
+    }
+ }
+ 
+diff --git a/Phase/src/PhaseVegetation.cpp b/Phase/src/PhaseVegetation.cpp
+index fecacec..735dcf2 100644
+--- a/Phase/src/PhaseVegetation.cpp
++++ b/Phase/src/PhaseVegetation.cpp
+@@ -49,8 +49,8 @@ VegetationVolumeMaterials processVegetationVolumeMaterials(PhaseGeneralParameter
+  * (Re)initialises the shared foliar objects for one direction set and runs the
+  * direction-set-dependent precomputing. Called by VegetationMaterialWriter
+  * whenever the direction set changes between models (the per-model data filled
+- * by computeLadData/readMultiplicativeFactor is reset by initFoliarModel, so it
+- * is redone here as well).
++ * by readMultiplicativeFactor is reset by initFoliarModel, so it is redone
++ * here as well; the per-model LAD is computed later in treat(), per model).
+  */
+ void prepareVegetationDirectionSet(PhaseGeneralParametersDTO & genDTO, VegetationVolumeMaterials & vegetation, const unsigned int directionSetIndex) {
+    const unsigned int numberOfFoliarModels = genDTO._volumesMaterials.understoryMultiFunctions.size();
+@@ -64,9 +64,7 @@ void prepareVegetationDirectionSet(PhaseGeneralParametersDTO & genDTO, Vegetatio
+            PhaseProperty::_numberOfSpectralBands, numberOfFoliarModels, PhaseProperty::_numberOfThreads,
+            PhaseProperty::_threadEnd, *vegetation.foliarModel);
+ 
+-	vegetation.ladComputation->initLADComputation(numberOfFoliarModels, PhaseProperty::_numberOfSpectralBands);
+-
+-	computeLadData(genDTO, *vegetation.ladComputation, *vegetation.foliarModel);
++	vegetation.ladComputation->initLADComputation();
+ 
+     PhaseProperty::setParametersForPrintingProgress();
+     PhaseProperty::resizePhaseParametersVectors();
+diff --git a/Phase/src/foliar/FoliarComputation.cpp b/Phase/src/foliar/FoliarComputation.cpp
+index 022d33f..debca92 100644
+--- a/Phase/src/foliar/FoliarComputation.cpp
++++ b/Phase/src/foliar/FoliarComputation.cpp
+@@ -538,7 +538,7 @@ double FoliarComputation::functiondTheta(	const int & thetaF,
+                                const int & iterationStepTheta,
+                                const unsigned int & modelIndex) {
+    double integranddPhi = computeIntegranddPhi(thetaF, incidentDirection, outputDirection, opticalProperties, iterationStepPhi);
+-	return integranddPhi * _leafAngleDistributionFunctionVector[modelIndex][thetaF * iterationStepTheta];
++	return integranddPhi * _leafAngleDistributionFunctionVector[thetaF * iterationStepTheta];
+ }
+ 
+ /**
+@@ -724,7 +724,7 @@ void FoliarComputation::computeSpecularPolTransferFoliarFromIntegration(const st
+                if (index == 0) {
+                    gfs = 0.;
+                } else {
+-					gfs = _leafAngleDistributionFunctionVector[modelIndex][index] / PhaseUtils::getStaticSine(index * 2);
++					gfs = _leafAngleDistributionFunctionVector[index] / PhaseUtils::getStaticSine(index * 2);
+                }
+ 
+ 
+@@ -782,7 +782,7 @@ void FoliarComputation::foliarPolaSpecTranferFunction(	const std::vector<Directi
+    int index = (int) floor(ZFs);
+    double gfs = 0;
+    if (index != 0) {
+-		double gfs = _leafAngleDistributionFunctionVector[modelIndex][index] / PhaseUtils::getStaticSine(index * 2);
++		double gfs = _leafAngleDistributionFunctionVector[index] / PhaseUtils::getStaticSine(index * 2);
+    }
+    double Q = 8.0 * M_PI * _transmTransfertFunctionVector[incidentDirection];
+    if (casPDF == REELLE || fabs(gfs) < EPSILON) {
+@@ -969,7 +969,7 @@ void FoliarComputation::generatePhaseMapDiff(	const std::vector<std::vector<doub
+                            fd = opticalProperties.bottomTransmittance;
+                        }
+                    }
+-					yy += fabs(prod_cosPsi) * fd * _leafAngleDistributionFunctionVector[modelIndex][zenithAngle];
++					yy += fabs(prod_cosPsi) * fd * _leafAngleDistributionFunctionVector[zenithAngle];
+                }
+            }
+            if (_transmTransfertFunctionVector[incidentDirection] < EPSILON) {
+@@ -1047,8 +1047,8 @@ void FoliarComputation::generatePhaseMapFluo(	const std::vector<std::vector<doub
+                            fdPSII = opticalProperties.bottomPSIIForward[emissionBandInex];
+                        }
+                    }
+-					yyPSI += fabs(prod_cosPsi) * fdPSI * _leafAngleDistributionFunctionVector[modelIndex][zenithAngle];

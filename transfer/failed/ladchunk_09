@@ -1,0 +1,100 @@
+    ofstreamElliptical.precision(20);
+    ofstreamElliptical.setf(std::ios::scientific);
+    if (ofstreamElliptical) {
+        for (int i = 0; i < NBMAX_TETAF; i++) {
+-			ofstreamElliptical << _leafAngleDistributionFunctionVector[modelIndex][i] << std::endl;
++			ofstreamElliptical << _leafAngleDistributionFunctionVector[i] << std::endl;
+        }
+    }
+    ofstreamElliptical.close();
+ }
+ 
+-void LADComputation::normalizeLeafAngleDistribution(const unsigned int & modelIndex) {
++void LADComputation::normalizeLeafAngleDistribution() {
+    double normalisation = 0;
+    for (int i = 0; i <= 90; i++) {
+-		normalisation += _leafAngleDistributionFunctionVector[modelIndex][i];
++		normalisation += _leafAngleDistributionFunctionVector[i];
+    }
+    if (normalisation != 0) {
+        for (int i = 0; i <= 90; i++) {
+-			_leafAngleDistributionFunctionVector[modelIndex][i] /= normalisation;
++			_leafAngleDistributionFunctionVector[i] /= normalisation;
+        }
+    }
+ 
+ }
+ 
+-void LADComputation::computeLeafAngleDistributionFromBunnick(	const unsigned int & modelIndex,
+-												const int & typeOfLad) {
++void LADComputation::computeLeafAngleDistributionFromBunnick(const int & typeOfLad) {
+    double ag = 0.0;
+    double bg = 0.0;
+    double cg = 0.0;
+    double dg = 0.0;
+    getBunnickCoefficients(ag, bg, cg, dg, typeOfLad);
+    for (unsigned int theta = 0; theta <= 90; theta++) {
+-		_leafAngleDistributionFunctionVector[modelIndex][theta] = computeBunnickLadWithPrecompute(theta, ag, bg, cg, dg);
+-		_gFunctionForLadComputationFunctionVector[modelIndex][2 * theta] = _leafAngleDistributionFunctionVector[modelIndex][theta];
++		_leafAngleDistributionFunctionVector[theta] = computeBunnickLadWithPrecompute(theta, ag, bg, cg, dg);
++		_gFunctionForLadComputationFunctionVector[2 * theta] = _leafAngleDistributionFunctionVector[theta];
+    }
+    for (double theta_f = 0.5; theta_f <= 90; theta_f += 1) {
+-		_gFunctionForLadComputationFunctionVector[modelIndex][2 * theta_f] = computeBunnickLadWithPrecompute(theta_f, ag, bg, cg, dg);
++		_gFunctionForLadComputationFunctionVector[2 * theta_f] = computeBunnickLadWithPrecompute(theta_f, ag, bg, cg, dg);
+    }
+-	normalizeLeafAngleDistribution(modelIndex);
+-	testNormalisation(modelIndex);
++	normalizeLeafAngleDistribution();
++	testNormalisation();
+ }
+ 
+ bool LADComputation::isFileReadableCheck(std::string & file) {
+@@ -402,19 +391,19 @@ double LADComputation::computeVerticalHorizontalLad(const double angle,
+    }
+ }
+ 
+-void LADComputation::testNormalisation(const unsigned int & modelIndex) {
++void LADComputation::testNormalisation() {
+ 
+    double sum = 0;
+    double trapeze = 0;
+    for (double theta = 0; theta < 90; theta++) {
+-		trapeze = _gFunctionForLadComputationFunctionVector[modelIndex][2 * theta]
+-				+ 4 * _gFunctionForLadComputationFunctionVector[modelIndex][2 * theta + 1]
+-				+ _gFunctionForLadComputationFunctionVector[modelIndex][2 * theta + 2];
++		trapeze = _gFunctionForLadComputationFunctionVector[2 * theta]
++				+ 4 * _gFunctionForLadComputationFunctionVector[2 * theta + 1]
++				+ _gFunctionForLadComputationFunctionVector[2 * theta + 2];
+        sum += trapeze;
+    }
+    sum *= (M_PI / 1080.);
+    for (unsigned int i = 0; i <= 180; i++) {
+-		_gFunctionForLadComputationFunctionVector[modelIndex][i] /= sum;
++		_gFunctionForLadComputationFunctionVector[i] /= sum;
+    }
+    if (sum > 1.1 || sum < 0.9) {
+        std::cout << "    Normalisation of leaf angle distribution function vector = " << sum << std::endl;
+@@ -465,10 +454,10 @@ void LADComputation::gaussLegendre(	double *Z,
+    }
+ }
+ 
+-int LADComputation::initialisationLadProbabilityDensityFunctions(const int & modelIndex) {
++int LADComputation::initialisationLadProbabilityDensityFunctions() {
+    int casPDF = REELLE;
+    for (int zenithal_foliaire = 0; zenithal_foliaire < NBMAX_TETAF; zenithal_foliaire++) {
+-		_probabilityDensityFunctionVector[zenithal_foliaire][1] = _leafAngleDistributionFunctionVector[modelIndex][zenithal_foliaire];
++		_probabilityDensityFunctionVector[zenithal_foliaire][1] = _leafAngleDistributionFunctionVector[zenithal_foliaire];
+        _probabilityDensityFunctionVector[zenithal_foliaire][0] = zenithal_foliaire;
+        if (fabs(_probabilityDensityFunctionVector[zenithal_foliaire][1] - 1.) < EPSILON) {
+            if (zenithal_foliaire == 0) {
+diff --git a/Phase/src/materials/VegetationMaterialWriter.cpp b/Phase/src/materials/VegetationMaterialWriter.cpp
+index 9a61a15..e2dc814 100644
+--- a/Phase/src/materials/VegetationMaterialWriter.cpp
++++ b/Phase/src/materials/VegetationMaterialWriter.cpp
+@@ -97,6 +97,12 @@ bool VegetationMaterialWriter::treat(	const phsdata::UnderstoryMulti & understor
+ 
+    foliarComputer.reInitFoliarComputation();
+ 
++	// Per-model LAD: read the LAD parameters of this model and compute its leaf
++	// angle distribution into the single-slot LAD vectors (no other model's LAD
