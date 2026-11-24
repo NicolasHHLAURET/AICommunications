@@ -1,0 +1,100 @@
+    }
+ };
+ }
+diff --git a/Phase/include/inputs/storage/opticalMaterials/vegetation/UnderstoryMultiplicativeFactor.hpp b/Phase/include/inputs/storage/opticalMaterials/vegetation/UnderstoryMultiplicativeFactor.hpp
+new file mode 100644
+index 0000000..d9ce0c1
+--- /dev/null
++++ b/Phase/include/inputs/storage/opticalMaterials/vegetation/UnderstoryMultiplicativeFactor.hpp
+@@ -0,0 +1,49 @@
++/*
++ * UnderstoryMultiplicativeFactor.hpp
++ *
++ *  Multiplicative factors of one foliar (vegetation) model face: same layout
++ *  as the lambertian ones, but with leafTransmittanceFactor instead of
++ *  direct/diffuseTransmittanceFactor (see XMLTemplate v6, UnderstoryMultiModel
++ *  subtree).
++ */
++
++#ifndef INCLUDE_INPUTS_STORAGE_OPTICALMATERIALS_VEGETATION_UNDERSTORYMULTIPLICATIVEFACTOR_HPP_
++#define INCLUDE_INPUTS_STORAGE_OPTICALMATERIALS_VEGETATION_UNDERSTORYMULTIPLICATIVEFACTOR_HPP_
++
++#include <string>
++#include <vector>
++#include <memory>
++#include <boost/optional.hpp>
++
++#include \"../MultiplicativeFactor.hpp\"
++
++namespace phsdata {
++class UnderstoryMultiplicativeFactor: public MultiplicativeFactor {
++public:
++\tdouble reflectanceFactor = 1.;
++\tdouble leafTransmittanceFactor = 1.;
++
++\tvoid loadFromParameters(const std::string& prefix) override {
++\t\tMultiplicativeFactor::loadFromParameters(prefix);  // Load shared fields
++\t\treflectanceFactor = DartSAParameters::get<double>(prefix + \".reflectanceFactor\");
++\t\tleafTransmittanceFactor = DartSAParameters::get<double>(prefix + \".leafTransmittanceFactor\");
++\t}
++};
++
++class UnderstoryMultiplicativeFactorList: public MultiplicativeFactorList {
++public:
++\tvoid loadFromParameters(const std::string& prefix) override {
++\t\tMultiplicativeFactorList::loadFromParameters(prefix);  // Load shared fields
++
++\t\t// Load repeated nodes (UnderstoryMultiplicativeFactorForLUT[0], [1], ...)
++\t\tint count = DartSAParameters::getNbOf(prefix + \".UnderstoryMultiplicativeFactorForLUT\");
++\t\tfor (int i = 0; i < count; ++i) {
++\t\t\tauto factor = std::make_shared<UnderstoryMultiplicativeFactor>();
++\t\t\tfactor->loadFromParameters(prefix + \".UnderstoryMultiplicativeFactorForLUT[\" + std::to_string(i) + \"]\");
++\t\t\tfactors.push_back(factor);
++\t\t}
++\t}
++};
++}
++
++#endif /* INCLUDE_INPUTS_STORAGE_OPTICALMATERIALS_VEGETATION_UNDERSTORYMULTIPLICATIVEFACTOR_HPP_ */
+diff --git a/Phase/src/PhaseDAO.cpp b/Phase/src/PhaseDAO.cpp
+index d062479..7865dd1 100755
+--- a/Phase/src/PhaseDAO.cpp
++++ b/Phase/src/PhaseDAO.cpp
+@@ -702,12 +702,6 @@ bool PhaseDAO::readCoeffDiffParametersForLambertianOpticalFactors(const int & in
+ /*
+  * Foliar
+  */
+-bool PhaseDAO::readCoeffDiffParametersForFoliarOpticalFactors(const int & index,
+-								OpticalFactorParameters & opticalFactorParameters) {
+-	ostringstream oss;
+-	oss << index;
+-	return readCoeffDiffParametersOpticalFactorsXML(\"Coeff_diff.Volumes.UnderstoryMultiFunctions.UnderstoryMulti[\" + oss.str() + \"].UnderstoryMultiModel.understoryNodeMultiplicativeFactorForLUT.\", \"understoryMultiplicativeFactorForLUT\", opticalFactorParameters);
+-}
+ 
+ bool PhaseDAO::readCoeffDiffParametersForFluidOpticalFactors(const int & index,
+ 								OpticalFactorParameters & opticalFactorParameters) {
+diff --git a/Phase/src/materials/VegetationMaterialWriter.cpp b/Phase/src/materials/VegetationMaterialWriter.cpp
+index 8141d46..63ed61e 100644
+--- a/Phase/src/materials/VegetationMaterialWriter.cpp
++++ b/Phase/src/materials/VegetationMaterialWriter.cpp
+@@ -292,50 +292,22 @@ bool VegetationMaterialWriter::treat(	const phsdata::UnderstoryMulti & understor
+ 		}
+ 	}
+ 
+-	OpticalFactorParameters opticalFactorParameters;
+-	if (PhaseDAO::readCoeffDiffParametersForFoliarOpticalFactors(foliarIndice, opticalFactorParameters)) {
+-		std::string textureName = \"v\" + boost::lexical_cast<std::string>(foliarIndice) + \"OF\";
+-		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRootScatObj.str() + \"opticalFactors\", textureName);
+-
+-		std::string textureKeyRoot = \"scene.textures.\" + textureName;
+-		genDTO.luxCoreRenderSceneProperties.ajouterCle(textureKeyRoot + \".type\", \"opticalFactors\");
+-		genDTO.luxCoreRenderSceneProperties.ajouterCle(textureKeyRoot + \".file\", textureName + \".bin\");
+-
+-		if (opticalFactorParameters.sameOpticalFactorForAllBands) {
+-			genDTO.luxCoreRenderSceneProperties.ajouterCle(textureKeyRoot + \".inputs\", opticalFactorParameters.fileNames[0]);
+-			genDTO.luxCoreRenderSceneProperties.ajouterCle(textureKeyRoot + \".inputsDuplication\", opticalFactorParameters.duplicateFirstLayer[0] ? \"1\" : \"0\");
+-		} else {
+-			std::ostringstream inputsOSS, duplicationOSS;
+-			inputsOSS << opticalFactorParameters.fileNames[0];
+-			duplicationOSS << opticalFactorParameters.duplicateFirstLayer[0];
+-			for (unsigned int spectralBandIndex = 1; spectralBandIndex < genDTO.numberOfSpectralBands; spectralBandIndex++) {
