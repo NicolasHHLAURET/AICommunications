@@ -1,330 +1,838 @@
-From e1bde4601cc23aa5c9a0db46425214bd240f37ee Mon Sep 17 00:00:00 2001
+From d06ae320523f63e4c3589af96fdfe5a223511e14 Mon Sep 17 00:00:00 2001
 From: Vibe <vibe@localhost>
-Date: Wed, 25 Nov 2026 12:51:26 +0000
-Subject: [PATCH] Delete VegetationVolumeMaterials struct; foliar objects
- become processAll() locals passed by ref; CONTEXT.md item 25
+Date: Wed, 25 Nov 2026 15:13:39 +0000
+Subject: [PATCH] Move writer-only free foliar helpers from
+ Phase.hpp/Phase.cpp/PhaseVegetation.cpp into VegetationMaterialWriter.cpp as
+ statics; drop dead computeAverageEta/writeFoliar decls; CONTEXT.md item 27
 
-- struct + processVegetationVolumeMaterials() removed (Phase.hpp/PhaseVegetation.cpp);
-  testIfUseSun moved into VegetationMaterialWriter.cpp
-- processAll(genDTO, pkmg, out) declares FoliarModel/FoliarComputation/LADComputation
-  (reference-bound to foliarModel, declared first)/FTFoliar/useSpectralIrradiance
-  as locals; treat() and prepareVegetationDirectionSet() take individual refs
-- dead pointsListSpec/pointsListDiff members dropped with the struct
-- Phase.cpp call site: vegetationWriter.processAll(genDTO, pkmg, outCoeffSpecProperties)
 ---
- CONTEXT.md                                    | 15 ++++++++
- Phase/include/Phase.hpp                       | 17 +++----
- .../materials/VegetationMaterialWriter.hpp    | 14 ++++--
- Phase/src/Phase.cpp                           |  3 +-
- Phase/src/PhaseVegetation.cpp                 | 47 +++++--------------
- .../materials/VegetationMaterialWriter.cpp    | 44 +++++++++++++----
- 6 files changed, 80 insertions(+), 60 deletions(-)
+ CONTEXT.md                                    |  17 +
+ Phase/include/Phase.hpp                       |  37 ---
+ Phase/src/Phase.cpp                           | 202 ------------
+ Phase/src/PhaseVegetation.cpp                 |  89 ------
+ .../materials/VegetationMaterialWriter.cpp    | 291 +++++++++++++++++++
+ 5 files changed, 308 insertions(+), 328 deletions(-)
 
 diff --git a/CONTEXT.md b/CONTEXT.md
-index 80c46a8..dd9574e 100644
+index 1ce42cc..2f42b06 100644
 --- a/CONTEXT.md
 +++ b/CONTEXT.md
-@@ -293,6 +293,21 @@ Sandbox notes for rebuilding the prefix (no root available):
-     documented for trees that differ only by whitespace (item 14/23
-     precedent -- the authoritative tree-hash gate then reports a different
-     hash, e.g. 608ca5ff vs 0e9bfb0a for item 23).
-+25. VegetationVolumeMaterials struct deleted (this session): it only provided
-+    lifetime grouping -- FoliarComputation/LADComputation hold references into
-+    FoliarModel, so the three must be co-owned with foliarModel destroyed last.
-+    processVegetationVolumeMaterials() was useless (only allocated the objects +
-+    testIfUseSun); its content moved into VegetationMaterialWriter::processAll(),
-+    which now declares the foliar objects as locals (FoliarModel foliarModel;
-+    FoliarComputation foliarComputation(foliarModel); LADComputation
-+    ladComputation(foliarModel); FTFoliar fTFoliar; useSpectralIrradiance...).
-+    They CANNOT be locals of treat(): treat() runs per model while
-+    prepareVegetationDirectionSet() (called from processAll on direction-set
-+    change) initializes the shared per-direction-set state they reuse. The dead
-+    pointsListSpec/pointsListDiff members went away with the struct (treat()
-+    already had its own locals). processAll/treat/prepareVegetationDirectionSet
-+    now take the individual refs instead of the struct; the Phase.cpp call site
-+    is just vegetationWriter.processAll(genDTO, pkmg, outCoeffSpecProperties).
+@@ -326,6 +326,23 @@ Sandbox notes for rebuilding the prefix (no root available):
+     recorded as "OWNER: confirm" in item 9. Regression vs PhaseOld, now
+     fixed, in 3 cases that used to sun-weight foliar reflectance anyway:
+     weighting disabled, LiDAR mode, non-database irradiance.
++27. Free foliar helpers moved from Phase.hpp / Phase.cpp / PhaseVegetation.cpp
++    into VegetationMaterialWriter.cpp as file-static functions (this session,
++    owner request): getUnderstoryDirectionSetIndex,
++    fillFoliarModelMultiplicativeFactors (+ its static helper
++    fillFoliarModelFaceMultiplicativeFactors), prepareVegetationDirectionSet,
++    computeLadDataForModel, readBioClimaticFile,
++    computeAndWriteAverageBioClimaticProfile. Each had VegetationMaterialWriter
++    as its only caller (verified repo-wide, PhaseOld excluded).
++    buildFoliarOpticalPropertyParameters STAYS public in PhaseVegetation.cpp:
++    also called from Phase.cpp createDatabasesReadingProperties(). Dead
++    declarations removed from Phase.hpp: computeAverageEta and the free
++    writeFoliar (no definition, no callers -- the writer calls the
++    FoliarComputation::writeFoliar method). Note: foliarPrecomputing /
++    numberOfAngularSectors / printNumberOfFoliarModels are still declared in
++    Phase.hpp and defined in Phase.cpp; their only caller is now the moved
++    prepareVegetationDirectionSet() -- candidates for a later pass.
++    readMultiplicativeFactor stays (5 surface call sites in Phase.cpp).
  
  ## Known TODOs / open points (next sessions)
  
 diff --git a/Phase/include/Phase.hpp b/Phase/include/Phase.hpp
-index 00ee0bb..1a3b422 100644
+index 1a3b422..942035b 100644
 --- a/Phase/include/Phase.hpp
 +++ b/Phase/include/Phase.hpp
-@@ -374,16 +374,6 @@ void treatMixedMaterial(PhaseGeneralParametersDTO & genDTO,	unsigned int opIndex
- std::string getMaterialName(unsigned int modelType, unsigned int modelIndex);
- 
- /* Foliar */
--struct VegetationVolumeMaterials {
--	std::unique_ptr<FoliarModel> foliarModel;
--	std::unique_ptr<FoliarComputation> foliarComputation;
--	std::unique_ptr<LADComputation> ladComputation;
--	FTFoliar fTFoliar;
--	PointsListsNCIntegration<DirectionCartesienne> pointsListSpec;
--	PointsListsNCIntegration<DirectionCartesienne> pointsListDiff;
--	std::vector<bool> useSpectralIrradianceForReflectance;
--};
--VegetationVolumeMaterials processVegetationVolumeMaterials(PhaseGeneralParametersDTO & genDTO);
- double numberOfAngularSectors(	const vector<DirectionCartesienne> & listDirections,
-                double & solidAnglesSum);
+@@ -378,50 +378,13 @@ double numberOfAngularSectors(\tconst vector<DirectionCartesienne> & listDirectio
+                                double & solidAnglesSum);
  void printNumberOfFoliarModels();
-@@ -401,7 +391,12 @@ void computeLadDataForModel(const PhaseGeneralParametersDTO & genDTO,
-                const unsigned int & outputModelIndex);
- 
- unsigned int getUnderstoryDirectionSetIndex(const PhaseGeneralParametersDTO & genDTO, const unsigned int modelPosition);
--void prepareVegetationDirectionSet(PhaseGeneralParametersDTO & genDTO, VegetationVolumeMaterials & vegetation, const unsigned int directionSetIndex);
-+void prepareVegetationDirectionSet(PhaseGeneralParametersDTO & genDTO,
-+				FoliarModel & foliarModel,
-+				FoliarComputation & foliarComputation,
-+				LADComputation & ladComputation,
-+				FTFoliar & fTFoliar,
-+				const unsigned int directionSetIndex);
+ void readMultiplicativeFactor(const PhaseGeneralParametersDTO & genDTO);
+-void fillFoliarModelMultiplicativeFactors(const phsdata::UnderstoryMulti & understory, FoliarModel & foliarModel);
+ FTFoliar foliarPrecomputing(\tconst PhaseGeneralParametersDTO & genDTO,
+                                const vector<DirectionCartesienne> & listDirections,
+                                const unsigned int & iterationStepTheta,
+                                const unsigned int & iterationStepPhi,
+                                const double & solidAnglesSum);
+-void computeLadDataForModel(const PhaseGeneralParametersDTO & genDTO,
+-				LADComputation & ladComputation,
+-				FoliarModel & foliarModel,
+-				const phsdata::UnderstoryMulti & understory,
+-				const unsigned int & outputModelIndex);
+-
+-unsigned int getUnderstoryDirectionSetIndex(const PhaseGeneralParametersDTO & genDTO, const unsigned int modelPosition);
+-void prepareVegetationDirectionSet(PhaseGeneralParametersDTO & genDTO,
+-				FoliarModel & foliarModel,
+-				FoliarComputation & foliarComputation,
+-				LADComputation & ladComputation,
+-				FTFoliar & fTFoliar,
+-				const unsigned int directionSetIndex);
  OpticalPropertyParameters buildFoliarOpticalPropertyParameters(const phsdata::UnderstoryMulti & understory, const unsigned int numberOfBands);
  
- void readBioClimaticFile( 	string bcFilePath,
-diff --git a/Phase/include/materials/VegetationMaterialWriter.hpp b/Phase/include/materials/VegetationMaterialWriter.hpp
-index 8569bb1..a4dbfae 100644
---- a/Phase/include/materials/VegetationMaterialWriter.hpp
-+++ b/Phase/include/materials/VegetationMaterialWriter.hpp
-@@ -21,7 +21,9 @@
- #include "fluorescence/FluorescenceMatrices.hpp"
- #include "opticalfactors/OpticalFactorsTextureWriter.hpp"
+-void readBioClimaticFile( 	string bcFilePath,
+-							vector<double> & bioClimaticThetaValues,
+-							vector<double> & bioClimaticPhiValues,
+-							vector<vector<vector<double> > > & bioClimaticProfileEta);
+-
+-void computeAverageEta(\tconst vector<double> & bioClimaticThetaValues, const vector<double> & bioClimaticPhiValues,
+-					 	 	const vector<vector<vector<double>>> & bioClimaticProfileEta, double & average);
+-
+-void computeAndWriteAverageBioClimaticProfile(\tconst FoliarComputation & foliarCompute,
+-												const vector<double> & bioClimaticThetaValues,
+-												const vector<double> & bioClimaticPhiValues,
+-												const vector<vector<vector<double> > > & bioClimaticProfileEta,
+-												ofstream & ofstreamAverageEta);
+-
+-
+-void writeFoliar(\tconst unsigned int& modelIndex,
+-					const unsigned int& spectralBandIndex,
+-					const std::string & modelName,
+-					PhaseKeyMappingGenerator & pkmg,
+-					std::ofstream & outCoeffSpecProperties,
+-					std::vector<FoliarProperty> & opticalPropertiesVector,
+-					FoliarComputation & foliarComputer);
+-
+ void writeSecondarySourcesOfLight(PhaseGeneralParametersDTO & genDTO, ofstream & outCoeffSpecProperties, const LightsContainer & lightsContainer);
  
--struct VegetationVolumeMaterials;
-+class FoliarModel;
-+class FoliarComputation;
-+class LADComputation;
- 
- namespace phase {
- 
-@@ -34,8 +36,10 @@ public:
-    // DirectionSetLink (original order kept within a group; the output model
-    // index is UnderstoryMulti::indexFunction). Calls
-    // prepareVegetationDirectionSet() only when the direction set changes.
-+	// The foliar objects are locals of this method: FoliarComputation and
-+	// LADComputation hold references into FoliarModel, so foliarModel must be
-+	// declared first (destroyed last).
-    void processAll(	PhaseGeneralParametersDTO & genDTO,
--				VegetationVolumeMaterials & vegetation,
-                PhaseKeyMappingGenerator & pkmg,
-                std::ofstream & outCoeffSpecProperties);
- 
-@@ -47,7 +51,11 @@ private:
-    bool treat(	const phsdata::UnderstoryMulti & understory,
-            unsigned int foliarIndice,
-            PhaseGeneralParametersDTO & genDTO,
--			VegetationVolumeMaterials & vegetation,
-+			FoliarModel & foliarModel,
-+			FoliarComputation & foliarComputation,
-+			LADComputation & ladComputation,
-+			FTFoliar & fTFoliar,
-+			const std::vector<bool> & useSpectralIrradianceForReflectance,
-            const std::vector<DirectionCartesienne> & listDirections,
-            PhaseKeyMappingGenerator & pkmg,
-            std::ofstream & outCoeffSpecProperties);
+ //void writeTemperatureProperties(PhaseGeneralParametersDTO & genDTO, ofstream & outCoeffSpecProperties, const std::vector<TemperatureFunction> & temperatureFunctions);
 diff --git a/Phase/src/Phase.cpp b/Phase/src/Phase.cpp
-index 5f2fd27..d07f8a2 100755
+index d07f8a2..3d69455 100755
 --- a/Phase/src/Phase.cpp
 +++ b/Phase/src/Phase.cpp
-@@ -2207,8 +2207,7 @@ void execute_batchPhase(PhaseGeneralParametersDTO & genDTO,
-    phase::FluorescenceService vegetationFluorescenceService;
-    phase::OpticalFactorsTextureWriter vegetationOpticalFactorsWriter;
-    phase::VegetationMaterialWriter vegetationWriter(vegetationFluorescenceService, vegetationOpticalFactorsWriter);
--	VegetationVolumeMaterials vegetationMaterials = processVegetationVolumeMaterials(genDTO);
--	vegetationWriter.processAll(genDTO, vegetationMaterials, pkmg, outCoeffSpecProperties);
-+	vegetationWriter.processAll(genDTO, pkmg, outCoeffSpecProperties);
-    writePhasePropertiesSpectralIrradiance(outCoeffSpecProperties, pkmg, genDTO);
+@@ -1511,131 +1511,6 @@ FTFoliar foliarPrecomputing(const PhaseGeneralParametersDTO & genDTO,
+    return fTFoliar;
+ }
  
- //	// Lecture des bases de donnees
+-void readBioClimaticFile(	string bcFilePath, vector<double> & bioClimaticThetaValues,
+-							vector<double> & bioClimaticPhiValues,
+-							vector<vector<vector<double> > > & bioClimaticProfileEta) {
+-	bioClimaticThetaValues.clear();
+-	bioClimaticPhiValues.clear();
+-	bool binary = boost::algorithm::ends_with(bcFilePath, ".bin");
+-	ifstream bcStream;
+-	if (binary) {
+-		bcStream.open(bcFilePath.c_str(), ifstream::in | ifstream::binary);
+-	} else {
+-		bcStream.open(bcFilePath.c_str(), ifstream::in);
+-	}
+-	if (bcStream) {
+-		unsigned int nbLayer, nbTheta, nbPhi;
+-		if (binary) {
+-			bcStream.read((char*) &nbLayer, sizeof(unsigned int));
+-			bcStream.read((char*) &nbTheta, sizeof(unsigned int));
+-			bcStream.read((char*) &nbPhi, sizeof(unsigned int));
+-		} else {
+-			bcStream >> nbLayer >> nbTheta >> nbPhi;
+-		}
+-		if (nbTheta != 1) {
+-			// Recover the median value of each range
+-			bioClimaticThetaValues.resize(nbTheta);
+-			for (unsigned int i = 0; i < nbTheta; ++i) {
+-				if (binary) {
+-					bcStream.read((char*) &bioClimaticThetaValues[i], sizeof(double));
+-				} else {
+-					bcStream >> bioClimaticThetaValues[i];
+-				}
+-			}
+-		}
+-		if (nbPhi != 1) {
+-			// Recover the median value of each range
+-			bioClimaticPhiValues.resize(nbPhi);
+-			for (unsigned int i = 0; i < nbPhi; ++i) {
+-				if (binary) {
+-					bcStream.read((char*) &bioClimaticPhiValues[i], sizeof(double));
+-				} else {
+-					bcStream >> bioClimaticPhiValues[i];
+-				}
+-			}
+-		}
+-		bioClimaticProfileEta.clear();
+-		bioClimaticProfileEta.resize(nbLayer, std::vector<std::vector<double> >(nbTheta, std::vector<double>(nbPhi)));
+-		for (unsigned int l = 0; l < nbLayer; ++l) {
+-			for (unsigned int t = 0; t < nbTheta; ++t) {
+-				for (unsigned int p = 0; p < nbPhi; ++p) {
+-					if (binary) {
+-						bcStream.read((char*) &bioClimaticProfileEta[l][t][p], sizeof(double));
+-					} else {
+-						bcStream >> bioClimaticProfileEta[l][t][p];
+-					}
+-				}
+-			}
+-		}
+-		bcStream.close();
+-	}
+-}
+-
+-void computeAndWriteAverageBioClimaticProfile(	const FoliarComputation & foliarComputer,
+-												const vector<double> & centralBioClimaticThetaValues,
+-												const vector<double> & centralBioClimaticPhiValues,
+-												const vector<vector<vector<double> > > & bioClimaticProfileEta,
+-												ofstream & ofstreamAverageEta) {
+-	vector<double> averageBioClimaticProfileEta;
+-	unsigned int nbLayers = bioClimaticProfileEta.size(), nbTheta = centralBioClimaticThetaValues.size(), nbPhi = centralBioClimaticPhiValues.size();
+-	nbTheta = max(1, nbTheta);
+-	nbPhi = max(1, nbPhi);
+-	if (nbTheta == 1 && nbPhi == 1) {
+-		// nbTheta == 1 && nbPhi == 1 => The biochemical profile eta is aleady an average
+-		averageBioClimaticProfileEta.resize(nbLayers);
+-		for (unsigned int i = 0; i < nbLayers; i++) {
+-			averageBioClimaticProfileEta[i] = bioClimaticProfileEta[i][0][0];
+-		}
+-	}
+-	else {
+-		// We compute an average profile of bioclimatic eta per layer
+-		averageBioClimaticProfileEta.resize(nbLayers);
+-		vector<double> thetaValues, phiValues;
+-		thetaValues.resize(nbTheta + 1);
+-		phiValues.resize(nbPhi + 1);
+-		thetaValues[0] = 0;
+-		thetaValues[1] = 2 * centralBioClimaticThetaValues[0];
+-		phiValues[0] = 0;
+-		phiValues[1] = 2 * centralBioClimaticPhiValues[0];
+-		for (unsigned int i = 2; i < thetaValues.size(); i++) {
+-			thetaValues[i] = 2 * centralBioClimaticThetaValues[i - 1] - thetaValues[i - 1];
+-		}
+-		for (unsigned int i = 2; i < phiValues.size(); i++) {
+-			phiValues[i] = 2 * centralBioClimaticPhiValues[i - 1] - phiValues[i - 1];
+-		}
+-		vector<double> dThetaValues, dPhiValues;
+-		dThetaValues.resize(nbTheta);
+-		dPhiValues.resize(nbPhi);
+-		for (unsigned int i = 0; i < dThetaValues.size(); i++) {
+-			dThetaValues[i] = thetaValues[i+1] - thetaValues[i];
+-		}
+-		for (unsigned int i = 0; i < dPhiValues.size(); i++) {
+-			dPhiValues[i] = phiValues[i+1] - phiValues[i];
+-		}
+-		for (unsigned int layer = 0; layer < nbLayers; layer++) {
+-			double average = 0.0;
+-			for (unsigned int phiIndex = 0; phiIndex < nbPhi; phiIndex++) {
+-				double thetaIntegral = 0.0;
+-				for (unsigned int thetaIndex = 0; thetaIndex < nbTheta; thetaIndex++) {
+-					thetaIntegral += bioClimaticProfileEta[layer][thetaIndex][phiIndex] *
+-							foliarComputer.getLeafAngleDistributionForAngle(centralBioClimaticThetaValues[thetaIndex]) *
+-							dThetaValues[thetaIndex];
+-				}
+-				average += thetaIntegral * dPhiValues[phiIndex];
+-			}
+-			averageBioClimaticProfileEta[layer] = average / 360;
+-		}
+-	}
+-	if (ofstreamAverageEta) {
+-		ofstreamAverageEta << nbLayers << " 1 1" << std::endl;
+-		for (unsigned int layer = 0; layer < nbLayers; layer++){
+-			ofstreamAverageEta << averageBioClimaticProfileEta[layer] << std::endl;
+-		}
+-	}
+-	ofstreamAverageEta.close();
+-
+-}
+-
+ /* At the moment, concerning the polarization, the fluids are treated like Rayleigh molecules */
+ /* TODO Treat fluids "like fluids" by finding their scattering Mueller matrices (An idea: Light scattering reviews 10) */
+ void treatFluid(PhaseKeyMappingGenerator & pkmg,
+@@ -2336,83 +2211,6 @@ void prepareProspect(PhaseGeneralParametersDTO & genDTO) {
+    }
+ }
+ 
+-/**
+- * Copies the LAD parameters of ONE vegetation model from its phsdata storage
+- * (UnderstoryMulti) into the per-model FoliarModel parameters and computes its
+- * leaf angle distribution into the single-slot LAD vectors of FoliarModel.
+- * Called from VegetationMaterialWriter::treat() for the model currently being
+- * treated, so no other model's LAD data is ever stored (single-slot storage).
+- * outputModelIndex (XML indexFunction) is only used to name the optional LAD
+- * output file.
+- */
+-void computeLadDataForModel(const PhaseGeneralParametersDTO & genDTO,
+-				LADComputation & ladComputation,
+-				FoliarModel & foliarModel,
+-				const phsdata::UnderstoryMulti & understory,
+-				const unsigned int & outputModelIndex) {
+-	ofstream writeOutputLeafAngleDistribution;
+-	ofstream writeOutputElliptical;
+-
+-	// Port the phsdata storage into the per-model FoliarModel parameters
+-	foliarModel.setFoliarTypeOfLeafAngleDistribution(understory.lad);
+-	foliarModel.setFoliarClumpingA(understory.clumpingA);
+-	foliarModel.setFoliarClumpingB(understory.clumpingB);
+-	foliarModel.setFoliarOmegaMin(understory.omegaMin);
+-	foliarModel.setFoliarOmegaMax(understory.omegaMax);
+-	foliarModel.setFoliarDimension(understory.dimFoliar);
+-	foliarModel.setHotSpotFactor(understory.thermalHotSpotFactor);
+-
+-	switch (understory.lad) {
+-		case globalReferences::ELLIPS:
+-			if (understory.ellipsoidalAla.is_initialized() && understory.ellipsoidalAla.value() >= 1e-10) {
+-				foliarModel.setFoliarAverageLeafAngle(understory.ellipsoidalAla.value());
+-				ladComputation.computeEllipsoidalLadDistribution(understory.ellipsoidalAla.value());
+-			} else {
+-				foliarModel.setFoliarTypeOfLeafAngleDistribution(globalReferences::HORIZ);
+-				ladComputation.computeVerticalHorizontalLadDistribution(0);
+-			}
+-			break;
+-		case globalReferences::BOUNDEDUNI:
+-			foliarModel.setNumberOfAla(understory.boundedUniformNbAla.value_or(1));
+-			foliarModel.setNthAla(understory.boundedUniformNthAla.value_or(1));
+-			ladComputation.computeBoundedUniformLadDistribution(foliarModel.getNumberOfAla(),
+-					foliarModel.getNthOfAla());
+-			break;
+-
+-		case globalReferences::ELLIPT:
+-			foliarModel.setFoliarEllipsePrincipalAngle(understory.ellipticalThetaM.value_or(0.));
+-			foliarModel.setFoliarEllipseEccentricity(understory.ellipticalEpsilon.value_or(0.));
+-			ladComputation.computeEllipticalLadDistribution(foliarModel.getFoliarEllipsePrincipalAngle(),
+-					foliarModel.getFoliarEllipseEccentricity());
+-			ladComputation.writeEllipticalLad(writeOutputElliptical);
+-			break;
+-		case globalReferences::HORIZ:
+-			foliarModel.setFoliarTypeOfLeafAngleDistribution(globalReferences::HORIZ);
+-			ladComputation.computeVerticalHorizontalLadDistribution(0);
+-			break;
+-		case globalReferences::VERTI:
+-			ladComputation.computeVerticalHorizontalLadDistribution(90);
+-			break;
+-		case globalReferences::MANUAL: // De Wit
+-			ladComputation.computeClassicalLadDistribution(understory.manualLad.m, understory.manualLad.b0,
+-					understory.manualLad.b1, understory.manualLad.b2);
+-			break;
+-		case globalReferences::USERDEFINED: {
+-			const std::string nameDatabaseLAD = understory.userDefinedLadFileName.value_or("");
+-			const std::string ladFileName = DartEnv::getDatabasePath(nameDatabaseLAD) + nameDatabaseLAD;
+-			ladComputation.readLadFile(ladFileName);
+-			break;
+-		}
+-		default:
+-			ladComputation.getLadFile(understory.lad);
+-			break;
+-	}
+-	if (genDTO.isAskedForWritingLadResultsCheck == 1) {
+-		ladComputation.writeLad(outputModelIndex, writeOutputLeafAngleDistribution,
+-				foliarModel.getFoliarTypeOfLeafAngleDistribution());
+-	}
+-}
+-
+ void executeAtmosphereWithDatabase(	PhaseGeneralParametersDTO & genDTO,
+                                        AtmosphereParameters& atmosphereParameters,
+                                        AirPhaseFunction & moleculeAFP,
 diff --git a/Phase/src/PhaseVegetation.cpp b/Phase/src/PhaseVegetation.cpp
-index f81a18a..9622a7c 100644
+index 479159c..10876bb 100644
 --- a/Phase/src/PhaseVegetation.cpp
 +++ b/Phase/src/PhaseVegetation.cpp
-@@ -7,20 +7,6 @@
+@@ -7,95 +7,6 @@
  
  #include "Phase.hpp"
  
 -/**
-- * Decides, for each spectral band, whether the reflectance values must be
-- * weighted by the sun spectral irradiance: only the bands located in the
-- * reflective (non thermal-only) domain use the sun irradiance.
+- * Direction set used by one vegetation model: its own DirectionSetLink when
+- * valid, else the first direction set.
 - */
--static void testIfUseSun(const PhaseGeneralParametersDTO & genDTO,
--		std::vector<bool> & useSpectralIrradianceForReflectance) {
--	useSpectralIrradianceForReflectance.assign(genDTO.numberOfSpectralBands, false);
--	for (unsigned int bandIndex = 0; bandIndex < genDTO.numberOfSpectralBands; ++bandIndex) {
--		useSpectralIrradianceForReflectance[bandIndex] =
--				(genDTO.spectralDomain[bandIndex] != PhaseGeneralParametersDTO::Thermal);
+-unsigned int getUnderstoryDirectionSetIndex(const PhaseGeneralParametersDTO & genDTO, const unsigned int modelPosition) {
+-	const unsigned int indexDirectionSetLink = genDTO._volumesMaterials.understoryMultiFunctions[modelPosition]->directionSetLink.indexDirectionSetLink;
+-	if (indexDirectionSetLink < genDTO._directionSet.size()) {
+-		return indexDirectionSetLink;
+-	}
+-	return 0;
+-}
+-
+-static void fillFoliarModelFaceMultiplicativeFactors(FoliarModel & foliarModel,
+-		const phsdata::UnderstoryModel * model, const bool isBottomFace, const unsigned int numberOfBands) {
+-	if (model == nullptr || !model->useMultiplicativeFactorForLUT || !model->nodeMultiplicativeFactor.is_initialized())
+-		return;
+-	const phsdata::MultiplicativeFactorList & mfl = *model->nodeMultiplicativeFactor;
+-	for (unsigned int sbi = 0; sbi < numberOfBands && sbi < mfl.factors.size(); ++sbi) {
+-		auto umf = std::static_pointer_cast<const phsdata::UnderstoryMultiplicativeFactor>(mfl.factors[sbi]);
+-		if (isBottomFace)
+-			foliarModel.setAbaxialReflectanceForFoliar(sbi, umf->reflectanceFactor);
+-		else
+-			foliarModel.setAdaxialReflectanceForFoliar(sbi, umf->reflectanceFactor);
+-		foliarModel.setLeafTransmittanceForFoliar(sbi, umf->leafTransmittanceFactor, isBottomFace);
 -	}
 -}
 -
- /**
-  * Direction set used by one vegetation model: its own DirectionSetLink when
-  * valid, else the first direction set.
-@@ -33,18 +19,6 @@ unsigned int getUnderstoryDirectionSetIndex(const PhaseGeneralParametersDTO & ge
-    return 0;
- }
- 
--VegetationVolumeMaterials processVegetationVolumeMaterials(PhaseGeneralParametersDTO & genDTO) {
--	VegetationVolumeMaterials vegetation;
--
--	vegetation.foliarModel.reset(new FoliarModel());
--	vegetation.foliarComputation.reset(new FoliarComputation(*vegetation.foliarModel));
--	vegetation.ladComputation.reset(new LADComputation(*vegetation.foliarModel));
--
--	testIfUseSun(genDTO, vegetation.useSpectralIrradianceForReflectance);
--
--	return vegetation;
+-void fillFoliarModelMultiplicativeFactors(const phsdata::UnderstoryMulti & understory, FoliarModel & foliarModel) {
+-	const unsigned int numberOfBands = PhaseProperty::getNumberOfSpectralBands();
+-	const phsdata::UnderstoryModel * topModel = understory.getTopModel();
+-	const phsdata::UnderstoryModel * bottomModel = understory.getBottomModel();
+-	if (bottomModel == nullptr)
+-		bottomModel = topModel;
+-	fillFoliarModelFaceMultiplicativeFactors(foliarModel, topModel, false, numberOfBands);
+-	fillFoliarModelFaceMultiplicativeFactors(foliarModel, bottomModel, true, numberOfBands);
 -}
 -
- static void fillFoliarModelFaceMultiplicativeFactors(FoliarModel & foliarModel,
-        const phsdata::UnderstoryModel * model, const bool isBottomFace, const unsigned int numberOfBands) {
-    if (model == nullptr || !model->useMultiplicativeFactorForLUT || !model->nodeMultiplicativeFactor.is_initialized())
-@@ -76,19 +50,24 @@ void fillFoliarModelMultiplicativeFactors(const phsdata::UnderstoryMulti & under
-  * whenever the direction set changes between models (the per-model data is
-  * reset by initFoliarModel, so it is recomputed in treat(), per model).
-  */
--void prepareVegetationDirectionSet(PhaseGeneralParametersDTO & genDTO, VegetationVolumeMaterials & vegetation, const unsigned int directionSetIndex) {
-+void prepareVegetationDirectionSet(PhaseGeneralParametersDTO & genDTO,
+-/**
+- * (Re)initialises the shared foliar objects for one direction set and runs the
+- * direction-set-dependent precomputing. Called by VegetationMaterialWriter
+- * whenever the direction set changes between models (the per-model data is
+- * reset by initFoliarModel, so it is recomputed in treat(), per model).
+- */
+-void prepareVegetationDirectionSet(PhaseGeneralParametersDTO & genDTO,
+-		FoliarModel & foliarModel,
+-		FoliarComputation & foliarComputation,
+-		LADComputation & ladComputation,
+-		FTFoliar & fTFoliar,
+-		const unsigned int directionSetIndex) {
+-	const unsigned int numberOfFoliarModels = genDTO._volumesMaterials.understoryMultiFunctions.size();
+-	const vector<DirectionCartesienne> & listDirections = genDTO._directionSet[directionSetIndex]._directions;
+-	const unsigned int numberOfDirections = listDirections.size();
+-
+-	foliarModel.initFoliarModel(PhaseProperty::_numberOfSpectralBands,
+-			numberOfDirections);
+-
+-	foliarComputation.initFoliarComputation(numberOfDirections,
+-			PhaseProperty::_numberOfSpectralBands, numberOfFoliarModels, PhaseProperty::_numberOfThreads,
+-			PhaseProperty::_threadEnd, foliarModel);
+-
+-	ladComputation.initLADComputation();
+-
+-    PhaseProperty::setParametersForPrintingProgress();
+-    PhaseProperty::resizePhaseParametersVectors();
+-
+-	readMultiplicativeFactor(genDTO);
+-    printNumberOfFoliarModels();
+-
+-    int iterationStepPhi = genDTO._volumesMaterials.integrationStepOnPhi;
+-    int iterationStepTheta = genDTO._volumesMaterials.integrationStepOnTheta;
+-
+-	foliarComputation.computeFoliarCosinePsi(listDirections, iterationStepPhi, iterationStepTheta);
+-
+-    /* FOLIAR precomputing */
+-	if (PhaseProperty::getNumberOfFoliarModels() > 0) {
+-		cout << "\tProcessing Vegetation models" << endl;
+-    }
+-	double solidAnglesSum = 0.;
+-	numberOfAngularSectors(listDirections, solidAnglesSum);
+-	fTFoliar = foliarPrecomputing(genDTO, listDirections, iterationStepTheta, iterationStepPhi, solidAnglesSum);
+-
+-    if (PhaseProperty::getFluorescence()) {
+-        PhaseProperty::initYields();
+-        if (PhaseProperty::getNumberOfFoliarModels() > 0) {
+-			foliarComputation.initFluorescenceMatrix();
+-        }
+-    }
+-}
+-
+ /**
+  * Builds the OpticalPropertyParameters (FOLIAR_PROPERTY) of one vegetation
+  * model from its phsdata storage: the top/bottom database+model names (the
+diff --git a/Phase/src/materials/VegetationMaterialWriter.cpp b/Phase/src/materials/VegetationMaterialWriter.cpp
+index 027cc3f..c6743c1 100644
+--- a/Phase/src/materials/VegetationMaterialWriter.cpp
++++ b/Phase/src/materials/VegetationMaterialWriter.cpp
+@@ -38,6 +38,296 @@ static void testIfUseSun(const PhaseGeneralParametersDTO & genDTO,
+    }
+ }
+ 
++/**
++ * Direction set used by one vegetation model: its own DirectionSetLink when
++ * valid, else the first direction set.
++ */
++static unsigned int getUnderstoryDirectionSetIndex(const PhaseGeneralParametersDTO & genDTO, const unsigned int modelPosition) {
++	const unsigned int indexDirectionSetLink = genDTO._volumesMaterials.understoryMultiFunctions[modelPosition]->directionSetLink.indexDirectionSetLink;
++	if (indexDirectionSetLink < genDTO._directionSet.size()) {
++		return indexDirectionSetLink;
++	}
++	return 0;
++}
++
++static void fillFoliarModelFaceMultiplicativeFactors(FoliarModel & foliarModel,
++		const phsdata::UnderstoryModel * model, const bool isBottomFace, const unsigned int numberOfBands) {
++	if (model == nullptr || !model->useMultiplicativeFactorForLUT || !model->nodeMultiplicativeFactor.is_initialized())
++		return;
++	const phsdata::MultiplicativeFactorList & mfl = *model->nodeMultiplicativeFactor;
++	for (unsigned int sbi = 0; sbi < numberOfBands && sbi < mfl.factors.size(); ++sbi) {
++		auto umf = std::static_pointer_cast<const phsdata::UnderstoryMultiplicativeFactor>(mfl.factors[sbi]);
++		if (isBottomFace)
++			foliarModel.setAbaxialReflectanceForFoliar(sbi, umf->reflectanceFactor);
++		else
++			foliarModel.setAdaxialReflectanceForFoliar(sbi, umf->reflectanceFactor);
++		foliarModel.setLeafTransmittanceForFoliar(sbi, umf->leafTransmittanceFactor, isBottomFace);
++	}
++}
++
++static void fillFoliarModelMultiplicativeFactors(const phsdata::UnderstoryMulti & understory, FoliarModel & foliarModel) {
++	const unsigned int numberOfBands = PhaseProperty::getNumberOfSpectralBands();
++	const phsdata::UnderstoryModel * topModel = understory.getTopModel();
++	const phsdata::UnderstoryModel * bottomModel = understory.getBottomModel();
++	if (bottomModel == nullptr)
++		bottomModel = topModel;
++	fillFoliarModelFaceMultiplicativeFactors(foliarModel, topModel, false, numberOfBands);
++	fillFoliarModelFaceMultiplicativeFactors(foliarModel, bottomModel, true, numberOfBands);
++}
++
++/**
++ * (Re)initialises the shared foliar objects for one direction set and runs the
++ * direction-set-dependent precomputing. Called by VegetationMaterialWriter
++ * whenever the direction set changes between models (the per-model data is
++ * reset by initFoliarModel, so it is recomputed in treat(), per model).
++ */
++static void prepareVegetationDirectionSet(PhaseGeneralParametersDTO & genDTO,
 +		FoliarModel & foliarModel,
 +		FoliarComputation & foliarComputation,
 +		LADComputation & ladComputation,
 +		FTFoliar & fTFoliar,
 +		const unsigned int directionSetIndex) {
-    const unsigned int numberOfFoliarModels = genDTO._volumesMaterials.understoryMultiFunctions.size();
-    const vector<DirectionCartesienne> & listDirections = genDTO._directionSet[directionSetIndex]._directions;
-    const unsigned int numberOfDirections = listDirections.size();
- 
--	vegetation.foliarModel->initFoliarModel(PhaseProperty::_numberOfSpectralBands,
++	const unsigned int numberOfFoliarModels = genDTO._volumesMaterials.understoryMultiFunctions.size();
++	const vector<DirectionCartesienne> & listDirections = genDTO._directionSet[directionSetIndex]._directions;
++	const unsigned int numberOfDirections = listDirections.size();
++
 +	foliarModel.initFoliarModel(PhaseProperty::_numberOfSpectralBands,
-            numberOfDirections);
--	vegetation.foliarComputation->initFoliarComputation(numberOfDirections,
++			numberOfDirections);
++
 +	foliarComputation.initFoliarComputation(numberOfDirections,
-        PhaseProperty::_numberOfSpectralBands, numberOfFoliarModels, PhaseProperty::_numberOfThreads,
--		PhaseProperty::_threadEnd, *vegetation.foliarModel);
-+		PhaseProperty::_threadEnd, foliarModel);
- 
--	vegetation.ladComputation->initLADComputation();
++			PhaseProperty::_numberOfSpectralBands, numberOfFoliarModels, PhaseProperty::_numberOfThreads,
++			PhaseProperty::_threadEnd, foliarModel);
++
 +	ladComputation.initLADComputation();
- 
-     PhaseProperty::setParametersForPrintingProgress();
-     PhaseProperty::resizePhaseParametersVectors();
-@@ -99,7 +78,7 @@ void prepareVegetationDirectionSet(PhaseGeneralParametersDTO & genDTO, Vegetatio
-     int iterationStepPhi = genDTO._volumesMaterials.integrationStepOnPhi;
-     int iterationStepTheta = genDTO._volumesMaterials.integrationStepOnTheta;
- 
--	vegetation.foliarComputation->computeFoliarCosinePsi(listDirections, iterationStepPhi, iterationStepTheta);
++
++    PhaseProperty::setParametersForPrintingProgress();
++    PhaseProperty::resizePhaseParametersVectors();
++
++	readMultiplicativeFactor(genDTO);
++    printNumberOfFoliarModels();
++
++    int iterationStepPhi = genDTO._volumesMaterials.integrationStepOnPhi;
++    int iterationStepTheta = genDTO._volumesMaterials.integrationStepOnTheta;
++
 +	foliarComputation.computeFoliarCosinePsi(listDirections, iterationStepPhi, iterationStepTheta);
- 
-     /* FOLIAR precomputing */
-     if (PhaseProperty::getNumberOfFoliarModels() > 0) {
-@@ -107,12 +86,12 @@ void prepareVegetationDirectionSet(PhaseGeneralParametersDTO & genDTO, Vegetatio
-     }
-    double solidAnglesSum = 0.;
-    numberOfAngularSectors(listDirections, solidAnglesSum);
--	vegetation.fTFoliar = foliarPrecomputing(genDTO, listDirections, iterationStepTheta, iterationStepPhi, solidAnglesSum);
++
++    /* FOLIAR precomputing */
++	if (PhaseProperty::getNumberOfFoliarModels() > 0) {
++		cout << "\tProcessing Vegetation models" << endl;
++    }
++	double solidAnglesSum = 0.;
++	numberOfAngularSectors(listDirections, solidAnglesSum);
 +	fTFoliar = foliarPrecomputing(genDTO, listDirections, iterationStepTheta, iterationStepPhi, solidAnglesSum);
- 
-     if (PhaseProperty::getFluorescence()) {
-         PhaseProperty::initYields();
-         if (PhaseProperty::getNumberOfFoliarModels() > 0) {
--			vegetation.foliarComputation->initFluorescenceMatrix();
++
++    if (PhaseProperty::getFluorescence()) {
++        PhaseProperty::initYields();
++        if (PhaseProperty::getNumberOfFoliarModels() > 0) {
 +			foliarComputation.initFluorescenceMatrix();
-         }
-     }
- }
++        }
++    }
++}
++
+-    if (PhaseProperty::getNumberOfFoliarModels() > 0) {
+-		cout << "\tProcessing Vegetation models" << endl;
+-    }
+-	double solidAnglesSum = 0.;
+-	numberOfAngularSectors(listDirections, solidAnglesSum);
+-	fTFoliar = foliarPrecomputing(genDTO, listDirections, iterationStepTheta, iterationStepPhi, solidAnglesSum);
+-
+-    if (PhaseProperty::getFluorescence()) {
+-        PhaseProperty::initYields();
+-        if (PhaseProperty::getNumberOfFoliarModels() > 0) {
+-			foliarComputation.initFluorescenceMatrix();
+-        }
+-    }
+-}
+-
+ /**
+  * Builds the OpticalPropertyParameters (FOLIAR_PROPERTY) of one vegetation
+  * model from its phsdata storage: the top/bottom database+model names (the
 diff --git a/Phase/src/materials/VegetationMaterialWriter.cpp b/Phase/src/materials/VegetationMaterialWriter.cpp
-index d0768b8..3329c69 100644
+index 027cc3f..78fb20c 100644
 --- a/Phase/src/materials/VegetationMaterialWriter.cpp
 +++ b/Phase/src/materials/VegetationMaterialWriter.cpp
-@@ -23,18 +23,40 @@
- 
- namespace phase {
+@@ -38,6 +38,297 @@ static void testIfUseSun(const PhaseGeneralParametersDTO & genDTO,
+    }
+ }
  
 +/**
-+ * Decides, for each spectral band, whether the reflectance values must be
-+ * weighted by the sun spectral irradiance: only the bands located in the
-+ * reflective (non thermal-only) domain use the sun irradiance.
++ * Direction set used by one vegetation model: its own DirectionSetLink when
++ * valid, else the first direction set.
 + */
-+static void testIfUseSun(const PhaseGeneralParametersDTO & genDTO,
-+		std::vector<bool> & useSpectralIrradianceForReflectance) {
-+	useSpectralIrradianceForReflectance.assign(genDTO.numberOfSpectralBands, false);
-+	for (unsigned int bandIndex = 0; bandIndex < genDTO.numberOfSpectralBands; ++bandIndex) {
-+		useSpectralIrradianceForReflectance[bandIndex] =
-+				(genDTO.spectralDomain[bandIndex] != PhaseGeneralParametersDTO::Thermal);
++static unsigned int getUnderstoryDirectionSetIndex(const PhaseGeneralParametersDTO & genDTO, const unsigned int modelPosition) {
+n+\tconst unsigned int indexDirectionSetLink = genDTO._volumesMaterials.understoryMultiFunctions[modelPosition]->directionSetLink.indexDirectionSetLink;
++	if (indexDirectionSetLink < genDTO._directionSet.size()) {
++		return indexDirectionSetLink;
++	}
++	return 0;
++}
++
++static void fillFoliarModelFaceMultiplicativeFactors(FoliarModel & foliarModel,
++		const phsdata::UnderstoryModel * model, const bool isBottomFace, const unsigned int numberOfBands) {
++	if (model == nullptr || !model->useMultiplicativeFactorForLUT || !model->nodeMultiplicativeFactor.is_initialized())
++		return;
++	const phsdata::MultiplicativeFactorList & mfl = *model->nodeMultiplicativeFactor;
++	for (unsigned int sbi = 0; sbi < numberOfBands && sbi < mfl.factors.size(); ++sbi) {
++		auto umf = std::static_pointer_cast<const phsdata::UnderstoryMultiplicativeFactor>(mfl.factors[sbi]);
++		if (isBottomFace)
++			foliarModel.setAbaxialReflectanceForFoliar(sbi, umf->reflectanceFactor);
++		else
++			foliarModel.setAdaxialReflectanceForFoliar(sbi, umf->reflectanceFactor);
++		foliarModel.setLeafTransmittanceForFoliar(sbi, umf->leafTransmittanceFactor, isBottomFace);
 +	}
 +}
 +
- VegetationMaterialWriter::VegetationMaterialWriter(	const FluorescenceService & fluorescenceService,
-                const OpticalFactorsTextureWriter & opticalFactorsWriter) :
-        _fluorescenceService(fluorescenceService), _opticalFactorsWriter(opticalFactorsWriter) {}
- 
- void VegetationMaterialWriter::processAll(	PhaseGeneralParametersDTO & genDTO,
--				VegetationVolumeMaterials & vegetation,
-                PhaseKeyMappingGenerator & pkmg,
-                std::ofstream & outCoeffSpecProperties) {
-    const std::vector<std::shared_ptr<phsdata::UnderstoryMulti> > & models = genDTO._volumesMaterials.understoryMultiFunctions;
-    if (models.empty())
-        return;
- 
-+	// FoliarComputation and LADComputation hold references into foliarModel:
-+	// foliarModel is declared first so that it is destroyed last.
-+	FoliarModel foliarModel;
-+	FoliarComputation foliarComputation(foliarModel);
-+	LADComputation ladComputation(foliarModel);
-+	FTFoliar fTFoliar;
-+	std::vector<bool> useSpectralIrradianceForReflectance;
-+	testIfUseSun(genDTO, useSpectralIrradianceForReflectance);
++static void fillFoliarModelMultiplicativeFactors(const phsdata::UnderstoryMulti & understory, FoliarModel & foliarModel) {
++	const unsigned int numberOfBands = PhaseProperty::getNumberOfSpectralBands();
++	const phsdata::UnderstoryModel * topModel = understory.getTopModel();
++	const phsdata::UnderstoryModel * bottomModel = understory.getBottomModel();
++	if (bottomModel == nullptr)
++		bottomModel = topModel;
++	fillFoliarModelFaceMultiplicativeFactors(foliarModel, topModel, false, numberOfBands);
++	fillFoliarModelFaceMultiplicativeFactors(foliarModel, bottomModel, true, numberOfBands);
++}
 +
-    // Iterate grouped by direction set (stable within a group) so that the
-    // direction-set-dependent precomputing is redone only when the direction
-    // set changes. Output model indices come from UnderstoryMulti::indexFunction,
-@@ -49,12 +71,13 @@ void VegetationMaterialWriter::processAll(	PhaseGeneralParametersDTO & genDTO,
-    for (unsigned int position : order) {
-        const unsigned int directionSetIndex = getUnderstoryDirectionSetIndex(genDTO, position);
-        if (directionSetIndex != lastDirectionSetIndex) {
--			prepareVegetationDirectionSet(genDTO, vegetation, directionSetIndex);
-+			prepareVegetationDirectionSet(genDTO, foliarModel, foliarComputation, ladComputation, fTFoliar, directionSetIndex);
-            lastDirectionSetIndex = directionSetIndex;
-            if (!_sphereMap)
--				_sphereMap.reset(new SphereDiscretizationMap(1.0, vegetation.fTFoliar.iterationStepPhi));
-+				_sphereMap.reset(new SphereDiscretizationMap(1.0, fTFoliar.iterationStepPhi));
-        }
--		treat(*models[position], position, genDTO, vegetation, genDTO._directionSet[directionSetIndex]._directions, pkmg, outCoeffSpecProperties);
-+		treat(*models[position], position, genDTO, foliarModel, foliarComputation, ladComputation, fTFoliar,
-+				useSpectralIrradianceForReflectance, genDTO._directionSet[directionSetIndex]._directions, pkmg, outCoeffSpecProperties);
-    }
- }
- 
-@@ -80,14 +103,15 @@ void VegetationMaterialWriter::computeFaceFluorescence(	FluorescenceResults & re
- bool VegetationMaterialWriter::treat(	const phsdata::UnderstoryMulti & understory,
-                unsigned int foliarIndice,
-                PhaseGeneralParametersDTO & genDTO,
--				VegetationVolumeMaterials & vegetation,
-+				FoliarModel & foliarModel,
-+				FoliarComputation & foliarComputation,
++/**
++ * (Re)initialises the shared foliar objects for one direction set and runs the
++ * direction-set-dependent precomputing. Called by VegetationMaterialWriter
++ * whenever the direction set changes between models (the per-model data is
++ * reset by initFoliarModel, so it is recomputed in treat(), per model).
++ */
++static void prepareVegetationDirectionSet(PhaseGeneralParametersDTO & genDTO,
++		FoliarModel & foliarModel,
++		FoliarComputation & foliarComputation,
++		LADComputation & ladComputation,
++		FTFoliar & fTFoliar,
++		const unsigned int directionSetIndex) {
++	const unsigned int numberOfFoliarModels = genDTO._volumesMaterials.understoryMultiFunctions.size();
++	const vector<DirectionCartesienne> & listDirections = genDTO._directionSet[directionSetIndex]._directions;
++	const unsigned int numberOfDirections = listDirections.size();
++
++	foliarModel.initFoliarModel(PhaseProperty::_numberOfSpectralBands,
++			numberOfDirections);
++
++	foliarComputation.initFoliarComputation(numberOfDirections,
++			PhaseProperty::_numberOfSpectralBands, numberOfFoliarModels, PhaseProperty::_numberOfThreads,
++			PhaseProperty::_threadEnd, foliarModel);
++
++	ladComputation.initLADComputation();
++
++    PhaseProperty::setParametersForPrintingProgress();
++    PhaseProperty::resizePhaseParametersVectors();
++
++	readMultiplicativeFactor(genDTO);
++    printNumberOfFoliarModels();
++
++    int iterationStepPhi = genDTO._volumesMaterials.integrationStepOnPhi;
++    int iterationStepTheta = genDTO._volumesMaterials.integrationStepOnTheta;
++
++	foliarComputation.computeFoliarCosinePsi(listDirections, iterationStepPhi, iterationStepTheta);
++
++    /* FOLIAR precomputing */
++    if (PhaseProperty::getNumberOfFoliarModels() > 0) {
++		cout << "\tProcessing Vegetation models" << endl;
++    }
++	double solidAnglesSum = 0.;
++	numberOfAngularSectors(listDirections, solidAnglesSum);
++	fTFoliar = foliarPrecomputing(genDTO, listDirections, iterationStepTheta, iterationStepPhi, solidAnglesSum);
++
++    if (PhaseProperty::getFluorescence()) {
++        PhaseProperty::initYields();
++        if (PhaseProperty::getNumberOfFoliarModels() > 0) {
++			foliarComputation.initFluorescenceMatrix();
++        }
++    }
++}
++
++/**
++ * Copies the LAD parameters of ONE vegetation model from its phsdata storage
++ * (UnderstoryMulti) into the per-model FoliarModel parameters and computes its
++ * leaf angle distribution into the single-slot LAD vectors of FoliarModel.
++ * Called from VegetationMaterialWriter::treat() for the model currently being
++ * treated, so no other model's LAD data is ever stored (single-slot storage).
++ * outputModelIndex (XML indexFunction) is only used to name the optional LAD
++ * output file.
++ */
++static void computeLadDataForModel(const PhaseGeneralParametersDTO & genDTO,
 +				LADComputation & ladComputation,
-+				FTFoliar & fTFoliar,
-+				const std::vector<bool> & useSpectralIrradianceForReflectance,
-                const std::vector<DirectionCartesienne> & listDirections,
-                PhaseKeyMappingGenerator & pkmg,
-                std::ofstream & outCoeffSpecProperties) {
--	FoliarComputation & foliarComputer = *vegetation.foliarComputation;
--	LADComputation & ladComputation = *vegetation.ladComputation;
--	FoliarModel & foliarModel = *vegetation.foliarModel;
--	FTFoliar & fTFoliar = vegetation.fTFoliar;
-+	FoliarComputation & foliarComputer = foliarComputation;
- 
-    const unsigned int modelIndex = understory.indexFunction;
-    const phsdata::UnderstoryModel * topModel = understory.getTopModel();
-@@ -118,7 +142,7 @@ bool VegetationMaterialWriter::treat(	const phsdata::UnderstoryMulti & understor
-                && foliarPropertyParameters.getDatabaseForProperty(numPropertyDatabase).get()->getDatabaseType() != WATER_NO_DATABASE_USER_DEFINED_UP
-                && foliarPropertyParameters.getDatabaseForProperty(numPropertyDatabase).get()->getDatabaseType() != WATER_NO_DATABASE_USER_DEFINED_DOWN) {
-            shared_ptr<PhaseDatabaseParameters> currentDatabase = foliarPropertyParameters.getDatabaseForProperty(numPropertyDatabase);
--			PhaseProperty::readReflectanceParameters(vegetation.useSpectralIrradianceForReflectance, currentDatabase);
-+			PhaseProperty::readReflectanceParameters(useSpectralIrradianceForReflectance, currentDatabase);
-        }
-    }
- 
++				FoliarModel & foliarModel,
++				const phsdata::UnderstoryMulti & understory,
++				const unsigned int & outputModelIndex) {
++	ofstream writeOutputLeafAngleDistribution;
++	ofstream writeOutputElliptical;
++
++	// Port the phsdata storage into the per-model FoliarModel parameters
++	foliarModel.setFoliarTypeOfLeafAngleDistribution(understory.lad);
++	foliarModel.setFoliarClumpingA(understory.clumpingA);
++	foliarModel.setFoliarClumpingB(understory.clumpingB);
++	foliarModel.setFoliarOmegaMin(understory.omegaMin);
++	foliarModel.setFoliarOmegaMax(understory.omegaMax);
++	foliarModel.setFoliarDimension(understory.dimFoliar);
++	foliarModel.setHotSpotFactor(understory.thermalHotSpotFactor);
++
++	switch (understory.lad) {
++		case globalReferences::ELLIPS:
++			if (understory.ellipsoidalAla.is_initialized() && understory.ellipsoidalAla.value() >= 1e-10) {
++				foliarModel.setFoliarAverageLeafAngle(understory.ellipsoidalAla.value());
++				ladComputation.computeEllipsoidalLadDistribution(understory.ellipsoidalAla.value());
++			} else {
++				foliarModel.setFoliarTypeOfLeafAngleDistribution(globalReferences::HORIZ);
++				ladComputation.computeVerticalHorizontalLadDistribution(0);
++			}
++			break;
++		case globalReferences::BOUNDEDUNI:
++			foliarModel.setNumberOfAla(understory.boundedUniformNbAla.value_or(1));
++			foliarModel.setNthAla(understory.boundedUniformNthAla.value_or(1));
++			ladComputation.computeBoundedUniformLadDistribution(foliarModel.getNumberOfAla(),
++					foliarModel.getNthOfAla());
++			break;
++
++		case globalReferences::ELLIPT:
++			foliarModel.setFoliarEllipsePrincipalAngle(understory.ellipticalThetaM.value_or(0.));
++			foliarModel.setFoliarEllipseEccentricity(understory.ellipticalEpsilon.value_or(0.));
++			ladComputation.computeEllipticalLadDistribution(foliarModel.getFoliarEllipsePrincipalAngle(),
++					foliarModel.getFoliarEllipseEccentricity());
++			ladComputation.writeEllipticalLad(writeOutputElliptical);
++			break;
++		case globalReferences::HORIZ:
++			foliarModel.setFoliarTypeOfLeafAngleDistribution(globalReferences::HORIZ);
++			ladComputation.computeVerticalHorizontalLadDistribution(0);
++			break;
++		case globalReferences::VERTI:
++			ladComputation.computeVerticalHorizontalLadDistribution(90);
++			break;
++		case globalReferences::MANUAL: // De Wit
++			ladComputation.computeClassicalLadDistribution(understory.manualLad.m, understory.manualLad.b0,
++					understory.manualLad.b1, understory.manualLad.b2);
++			break;
++		case globalReferences::USERDEFINED: {
++			const std::string nameDatabaseLAD = understory.userDefinedLadFileName.value_or("");
++			const std::string ladFileName = DartEnv::getDatabasePath(nameDatabaseLAD) + nameDatabaseLAD;
++			ladComputation.readLadFile(ladFileName);
++			break;
++		}
++		default:
++			ladComputation.getLadFile(understory.lad);
++			break;
++	}
++	if (genDTO.isAskedForWritingLadResultsCheck == 1) {
++		ladComputation.writeLad(outputModelIndex, writeOutputLeafAngleDistribution,
++				foliarModel.getFoliarTypeOfLeafAngleDistribution());
++	}
++}
++
++static void readBioClimaticFile(	string bcFilePath, vector<double> & bioClimaticThetaValues,
++						vector<double> & bioClimaticPhiValues,
++						vector<vector<vector<double> > > & bioClimaticProfileEta) {
++	bioClimaticThetaValues.clear();
++	bioClimaticPhiValues.clear();
++	bool binary = boost::algorithm::ends_with(bcFilePath, ".bin");
++	ifstream bcStream;
++	if (binary) {
++		bcStream.open(bcFilePath.c_str(), ifstream::in | ifstream::binary);
++	} else {
++		bcStream.open(bcFilePath.c_str(), ifstream::in);
++	}
++	if (bcStream) {
++		unsigned int nbLayer, nbTheta, nbPhi;
++		if (binary) {
++			bcStream.read((char*) &nbLayer, sizeof(unsigned int));
++			bcStream.read((char*) &nbTheta, sizeof(unsigned int));
++			bcStream.read((char*) &nbPhi, sizeof(unsigned int));
++		} else {
++			bcStream >> nbLayer >> nbTheta >> nbPhi;
++		}
++		if (nbTheta != 1) {
++			// Recover the median value of each range
++			bioClimaticThetaValues.resize(nbTheta);
+++			for (unsigned int i = 0; i < nbTheta; ++i) {
++				if (binary) {
++					bcStream.read((char*) &bioClimaticThetaValues[i], sizeof(double));
++				} else {
++					bcStream >> bioClimaticThetaValues[i];
++				}
++			}
++		}
++		if (nbPhi != 1) {
++			// Recover the median value of each range
++			bioClimaticPhiValues.resize(nbPhi);
++			for (unsigned int i = 0; i < nbPhi; ++i) {
++				if (binary) {
++					bcStream.read((char*) &bioClimaticPhiValues[i], sizeof(double));
++				} else {
++					bcStream >> bioClimaticPhiValues[i];
++				}
++			}
++		}
++		bioClimaticProfileEta.clear();
++		bioClimaticProfileEta.resize(nbLayer, std::vector<std::vector<double> >(nbTheta, std::vector<double>(nbPhi)));
++		for (unsigned int l = 0; l < nbLayer; ++l) {
++			for (unsigned int t = 0; t < nbTheta; ++t) {
++				for (unsigned int p = 0; p < nbPhi; ++p) {
++					if (binary) {
++						bcStream.read((char*) &bioClimaticProfileEta[l][t][p], sizeof(double));
++					} else {
++						bcStream >> bioClimaticProfileEta[l][t][p];
++					}
++				}
++			}
++		}
++		bcStream.close();
++	}
++}
++
++static void computeAndWriteAverageBioClimaticProfile(	const FoliarComputation & foliarComputer,
++												const vector<double> & centralBioClimaticThetaValues,
++												const vector<double> & centralBioClimaticPhiValues,
++												const vector<vector<vector<double> > > & bioClimaticProfileEta,
++												ofstream & ofstreamAverageEta) {
++	vector<double> averageBioClimaticProfileEta;
++	unsigned int nbLayers = bioClimaticProfileEta.size(), nbTheta = centralBioClimaticThetaValues.size(), nbPhi = centralBioClimaticPhiValues.size();
++	nbTheta = max(1, nbTheta);
++	nbPhi = max(1, nbPhi);
++	if (nbTheta == 1 && nbPhi == 1) {
++		// nbTheta == 1 && nbPhi == 1 => The biochemical profile eta is aleady an average
++		averageBioClimaticProfileEta.resize(nbLayers);
++		for (unsigned int i = 0; i < nbLayers; i++) {
++			averageBioClimaticProfileEta[i] = bioClimaticProfileEta[i][0][0];
++		}
++	}
++	else {
++		// We compute an average profile of bioclimatic eta per layer
++		averageBioClimaticProfileEta.resize(nbLayers);
++		vector<double> thetaValues, phiValues;
++		thetaValues.resize(nbTheta + 1);
++		phiValues.resize(nbPhi + 1);
++		thetaValues[0] = 0;
++		thetaValues[1] = 2 * centralBioClimaticThetaValues[0];
++		phiValues[0] = 0;
++		phiValues[1] = 2 * centralBioClimaticPhiValues[0];
++		for (unsigned int i = 2; i < thetaValues.size(); i++) {
++			thetaValues[i] = 2 * centralBioClimaticThetaValues[i - 1] - thetaValues[i - 1];
++		}
++		for (unsigned int i = 2; i < phiValues.size(); i++) {
++			phiValues[i] = 2 * centralBioClimaticPhiValues[i - 1] - phiValues[i - 1];
++		}
++		vector<double> dThetaValues, dPhiValues;
++		dThetaValues.resize(nbTheta);
++		dPhiValues.resize(nbPhi);
++		for (unsigned int i = 0; i < dThetaValues.size(); i++) {
++			dThetaValues[i] = thetaValues[i+1] - thetaValues[i];
++		}
++		for (unsigned int i = 0; i < dPhiValues.size(); i++) {
++			dPhiValues[i] = phiValues[i+1] - phiValues[i];
++		}
++		for (unsigned int layer = 0; layer < nbLayers; layer++) {
++			double average = 0.0;
++			for (unsigned int phiIndex = 0; phiIndex < nbPhi; phiIndex++) {
++				double thetaIntegral = 0.0;
++				for (unsigned int thetaIndex = 0; thetaIndex < nbTheta; thetaIndex++) {
++					thetaIntegral += bioClimaticProfileEta[layer][thetaIndex][phiIndex] *
++							foliarComputer.getLeafAngleDistributionForAngle(centralBioClimaticThetaValues[thetaIndex]) *
++							dThetaValues[thetaIndex];
++				}
++				average += thetaIntegral * dPhiValues[phiIndex];
++			}
++			averageBioClimaticProfileEta[layer] = average / 360;
++		}
++	}
++	if (ofstreamAverageEta) {
++		ofstreamAverageEta << nbLayers << " 1 1" << std::endl;
++		for (unsigned int layer = 0; layer < nbLayers; layer++){
++			ofstreamAverageEta << averageBioClimaticProfileEta[layer] << std::endl;
++		}
++	}
++	ofstreamAverageEta.close();
++
++}
++
+ VegetationMaterialWriter::VegetationMaterialWriter(	const FluorescenceService & fluorescenceService,
+                        const OpticalFactorsTextureWriter & opticalFactorsWriter) :
+        _fluorescenceService(fluorescenceService), _opticalFactorsWriter(opticalFactorsWriter) {}
 -- 
 2.47.3
 

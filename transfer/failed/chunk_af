@@ -1,0 +1,100 @@
++    if (PhaseProperty::getNumberOfFoliarModels() > 0) {
++		cout << "\tProcessing Vegetation models" << endl;
++    }
++	double solidAnglesSum = 0.;
++	numberOfAngularSectors(listDirections, solidAnglesSum);
++	fTFoliar = foliarPrecomputing(genDTO, listDirections, iterationStepTheta, iterationStepPhi, solidAnglesSum);
++
++    if (PhaseProperty::getFluorescence()) {
++        PhaseProperty::initYields();
++        if (PhaseProperty::getNumberOfFoliarModels() > 0) {
++			foliarComputation.initFluorescenceMatrix();
++        }
++    }
++}
++
++/**
++ * Copies the LAD parameters of ONE vegetation model from its phsdata storage
++ * (UnderstoryMulti) into the per-model FoliarModel parameters and computes its
++ * leaf angle distribution into the single-slot LAD vectors of FoliarModel.
++ * Called from VegetationMaterialWriter::treat() for the model currently being
++ * treated, so no other model's LAD data is ever stored (single-slot storage).
++ * outputModelIndex (XML indexFunction) is only used to name the optional LAD
++ * output file.
++ */
++static void computeLadDataForModel(const PhaseGeneralParametersDTO & genDTO,
++				LADComputation & ladComputation,
++				FoliarModel & foliarModel,
++				const phsdata::UnderstoryMulti & understory,
++				const unsigned int & outputModelIndex) {
++	ofstream writeOutputLeafAngleDistribution;
++	ofstream writeOutputElliptical;
++
++	// Port the phsdata storage into the per-model FoliarModel parameters
++	foliarModel.setFoliarTypeOfLeafAngleDistribution(understory.lad);
++	foliarModel.setFoliarClumpingA(understory.clumpingA);
++	foliarModel.setFoliarClumpingB(understory.clumpingB);
++	foliarModel.setFoliarOmegaMin(understory.omegaMin);
++	foliarModel.setFoliarOmegaMax(understory.omegaMax);
++	foliarModel.setFoliarDimension(understory.dimFoliar);
++	foliarModel.setHotSpotFactor(understory.thermalHotSpotFactor);
++
++	switch (understory.lad) {
++		case globalReferences::ELLIPS:
++			if (understory.ellipsoidalAla.is_initialized() && understory.ellipsoidalAla.value() >= 1e-10) {
++				foliarModel.setFoliarAverageLeafAngle(understory.ellipsoidalAla.value());
++				ladComputation.computeEllipsoidalLadDistribution(understory.ellipsoidalAla.value());
++			} else {
++				foliarModel.setFoliarTypeOfLeafAngleDistribution(globalReferences::HORIZ);
++				ladComputation.computeVerticalHorizontalLadDistribution(0);
++			}
++			break;
++		case globalReferences::BOUNDEDUNI:
++			foliarModel.setNumberOfAla(understory.boundedUniformNbAla.value_or(1));
++			foliarModel.setNthAla(understory.boundedUniformNthAla.value_or(1));
++			ladComputation.computeBoundedUniformLadDistribution(foliarModel.getNumberOfAla(),
++					foliarModel.getNthOfAla());
++			break;
++
++		case globalReferences::ELLIPT:
++			foliarModel.setFoliarEllipsePrincipalAngle(understory.ellipticalThetaM.value_or(0.));
++			foliarModel.setFoliarEllipseEccentricity(understory.ellipticalEpsilon.value_or(0.));
++			ladComputation.computeEllipticalLadDistribution(foliarModel.getFoliarEllipsePrincipalAngle(),
++					foliarModel.getFoliarEllipseEccentricity());
++			ladComputation.writeEllipticalLad(writeOutputElliptical);
++			break;
++		case globalReferences::HORIZ:
++			foliarModel.setFoliarTypeOfLeafAngleDistribution(globalReferences::HORIZ);
++			ladComputation.computeVerticalHorizontalLadDistribution(0);
++			break;
++		case globalReferences::VERTI:
++			ladComputation.computeVerticalHorizontalLadDistribution(90);
++			break;
++		case globalReferences::MANUAL: // De Wit
++			ladComputation.computeClassicalLadDistribution(understory.manualLad.m, understory.manualLad.b0,
++					understory.manualLad.b1, understory.manualLad.b2);
++			break;
++		case globalReferences::USERDEFINED: {
++			const std::string nameDatabaseLAD = understory.userDefinedLadFileName.value_or("");
++			const std::string ladFileName = DartEnv::getDatabasePath(nameDatabaseLAD) + nameDatabaseLAD;
++			ladComputation.readLadFile(ladFileName);
++			break;
++		}
++		default:
++			ladComputation.getLadFile(understory.lad);
++			break;
++	}
++	if (genDTO.isAskedForWritingLadResultsCheck == 1) {
++		ladComputation.writeLad(outputModelIndex, writeOutputLeafAngleDistribution,
++				foliarModel.getFoliarTypeOfLeafAngleDistribution());
++	}
++}
++
++static void readBioClimaticFile(	string bcFilePath, vector<double> & bioClimaticThetaValues,
++						vector<double> & bioClimaticPhiValues,
++						vector<vector<vector<double> > > & bioClimaticProfileEta) {
++	bioClimaticThetaValues.clear();
++	bioClimaticPhiValues.clear();
++	bool binary = boost::algorithm::ends_with(bcFilePath, ".bin");
++	ifstream bcStream;
++	if (binary) {
