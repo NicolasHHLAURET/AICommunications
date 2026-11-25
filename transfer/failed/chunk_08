@@ -1,0 +1,99 @@
+ }
+ 
+-double FoliarModel::getFoliarOmegaMin(const unsigned int& indice) {
+-	return _parametersForFoliarModels[indice].omegaMin;
++double FoliarModel::getFoliarOmegaMin() {
++	return _parametersForCurrentModel.omegaMin;
+ }
+ 
+-double FoliarModel::getFoliarOmegaMax(const unsigned int& indice) {
+-	return _parametersForFoliarModels[indice].omegaMax;
++double FoliarModel::getFoliarOmegaMax() {
++	return _parametersForCurrentModel.omegaMax;
+ }
+ 
+-void FoliarModel::setFoliarDimension(	const unsigned int& indice,
+-						const double& value) {
+-	_parametersForFoliarModels[indice].foliarDimension = value;
++void FoliarModel::setFoliarDimension(const double& value) {
++	_parametersForCurrentModel.foliarDimension = value;
+ }
+ 
+-double FoliarModel::getFoliarDimension(const unsigned int& indice) {
+-	return _parametersForFoliarModels[indice].foliarDimension;
++double FoliarModel::getFoliarDimension() {
++	return _parametersForCurrentModel.foliarDimension;
+ }
+ 
+-double FoliarModel::getHotSpotFactor(const unsigned int& indice) const {
+-	return _parametersForFoliarModels[indice].hotSpotFactor;
++double FoliarModel::getHotSpotFactor() const {
++	return _parametersForCurrentModel.hotSpotFactor;
+ }
+ 
+-void FoliarModel::setHotSpotFactor(const unsigned int& indice,
+-					const double& value) {
+-	_parametersForFoliarModels[indice].hotSpotFactor = value;
++void FoliarModel::setHotSpotFactor(const double& value) {
++	_parametersForCurrentModel.hotSpotFactor = value;
+ }
+ 
+-void FoliarModel::setFoliarAverageLeafAngle(const unsigned int& indice,
+-								const double& value) {
+-	_parametersForFoliarModels[indice].averageLeafAngle = value;
++void FoliarModel::setFoliarAverageLeafAngle(const double& value) {
++	_parametersForCurrentModel.averageLeafAngle = value;
+ }
+ 
+-double FoliarModel::getFoliarAverageLeafAngle(const unsigned int& indice) {
+-	return _parametersForFoliarModels[indice].averageLeafAngle;
++double FoliarModel::getFoliarAverageLeafAngle() {
++	return _parametersForCurrentModel.averageLeafAngle;
+ }
+ 
+-void FoliarModel::setNumberOfAla(	const int& indice,
+-						const int& value) {
+-	_parametersForFoliarModels[indice].numberOfAla = value;
++void FoliarModel::setNumberOfAla(const int& value) {
++	_parametersForCurrentModel.numberOfAla = value;
+ }
+-int FoliarModel::getNumberOfAla(const int& indice) {
+-	return _parametersForFoliarModels[indice].numberOfAla;
++int FoliarModel::getNumberOfAla() {
++	return _parametersForCurrentModel.numberOfAla;
+ }
+-void FoliarModel::setNthAla(const int& indice,
+-					const int& value) {
+-	_parametersForFoliarModels[indice].nthAla = value;
++void FoliarModel::setNthAla(const int& value) {
++	_parametersForCurrentModel.nthAla = value;
+ }
+-int FoliarModel::getNthOfAla(const int& indice) {
+-	return _parametersForFoliarModels[indice].nthAla;
++int FoliarModel::getNthOfAla() {
++	return _parametersForCurrentModel.nthAla;
+ }
+ 
+-void FoliarModel::setFoliarEllipsePrincipalAngle(	const unsigned int& indice,
+-									const double& value) {
+-	_parametersForFoliarModels[indice].ellipsePrincipalAngle = value;
++void FoliarModel::setFoliarEllipsePrincipalAngle(const double& value) {
++	_parametersForCurrentModel.ellipsePrincipalAngle = value;
+ }
+-void FoliarModel::setFoliarEllipseEccentricity(	const unsigned int& indice,
+-									const double& value) {
+-	_parametersForFoliarModels[indice].ellipseEccentricity = value;
++void FoliarModel::setFoliarEllipseEccentricity(const double& value) {
++	_parametersForCurrentModel.ellipseEccentricity = value;
+ }
+ 
+-double FoliarModel::getFoliarEllipsePrincipalAngle(const unsigned int& indice) {
+-	return _parametersForFoliarModels[indice].ellipsePrincipalAngle;
++double FoliarModel::getFoliarEllipsePrincipalAngle() {
++	return _parametersForCurrentModel.ellipsePrincipalAngle;
+ }
+-double FoliarModel::getFoliarEllipseEccentricity(const unsigned int& indice) {
+-	return _parametersForFoliarModels[indice].ellipseEccentricity;
++double FoliarModel::getFoliarEllipseEccentricity() {
++	return _parametersForCurrentModel.ellipseEccentricity;
+ }

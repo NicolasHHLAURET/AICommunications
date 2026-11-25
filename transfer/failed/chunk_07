@@ -1,0 +1,100 @@
+-				+ _foliarModel.getFoliarOmegaMax(modelIndex)
+-						/ (1 + exp(-_foliarModel.getFoliarClumpingA(modelIndex) * (theta - _foliarModel.getFoliarClumpingB(modelIndex))));
++			_clumpingIndex[incidentDirection] = _foliarModel.getFoliarOmegaMin()
++					+ _foliarModel.getFoliarOmegaMax()
++							/ (1 + exp(-_foliarModel.getFoliarClumpingA() * (theta - _foliarModel.getFoliarClumpingB())));
+            _transmTransfertFunctionVector[incidentDirection] *= _clumpingIndex[incidentDirection];
+        }
+    }
+diff --git a/Phase/src/foliar/FoliarModel.cpp b/Phase/src/foliar/FoliarModel.cpp
+index f993787..9bf22ac 100644
+--- a/Phase/src/foliar/FoliarModel.cpp
++++ b/Phase/src/foliar/FoliarModel.cpp
+@@ -7,33 +7,24 @@
+ 
+ #include "../../include/foliar/FoliarModel.hpp"
+ 
+-void FoliarModel::initFoliarModel(	const unsigned int & numberOfFoliarModels,
+-						const unsigned int & numberOfSpectralBands,
++void FoliarModel::initFoliarModel(	const unsigned int & numberOfSpectralBands,
+                        const unsigned int & numberOfDirections) {
+ 
+    _leafAngleDistributionFunctionVector.resize(NBMAX_TETAF + 1);
+    _transmTransfertFunctionVector.resize(numberOfDirections + 1);
+-
+-	_parametersForFoliarModels.resize(numberOfFoliarModels);
+-	for (unsigned int index = 0; index < numberOfFoliarModels; index++) {
+-		_parametersForFoliarModels[index].averageLeafAngle = 0.0;
+-		_parametersForFoliarModels[index].ellipsePrincipalAngle = 0.0;
+-		_parametersForFoliarModels[index].ellipseEccentricity = 0.0;
+-		_parametersForFoliarModels[index].omegaMin = 0.0;
+-		_parametersForFoliarModels[index].omegaMax = 0.0;
+-		_parametersForFoliarModels[index].clumpingA = 0.0;
+-		_parametersForFoliarModels[index].clumpingB = 0.0;
+-	}
+-
+-	for (unsigned int j = 0; j < numberOfFoliarModels; j++) {
+-		_parametersForFoliarModels[j].diffuseTransmittanceAccelerationFactor = 0.;
+-		_parametersForFoliarModels[j].leafTransmittanceVector.resize(numberOfSpectralBands, 1.0);
+-		_parametersForFoliarModels[j].bottomLeafTransmittanceVector.resize(numberOfSpectralBands, 1.0);
+-		_parametersForFoliarModels[j].abaxialReflectanceVector.resize(numberOfSpectralBands, 1.0);
+-		_parametersForFoliarModels[j].adaxialReflectanceVector.resize(numberOfSpectralBands, 1.0);
+-	}
+-
+    _gFunctionForLadComputationFunctionVector.resize(NBMAX_TETAF * 2 + 1);
++
++	_parametersForCurrentModel.averageLeafAngle = 0.0;
++	_parametersForCurrentModel.ellipsePrincipalAngle = 0.0;
++	_parametersForCurrentModel.ellipseEccentricity = 0.0;
++	_parametersForCurrentModel.omegaMin = 0.0;
++	_parametersForCurrentModel.omegaMax = 0.0;
++	_parametersForCurrentModel.clumpingA = 0.0;
++	_parametersForCurrentModel.clumpingB = 0.0;
++	_parametersForCurrentModel.leafTransmittanceVector.assign(numberOfSpectralBands, 1.0);
++	_parametersForCurrentModel.bottomLeafTransmittanceVector.assign(numberOfSpectralBands, 1.0);
++	_parametersForCurrentModel.abaxialReflectanceVector.assign(numberOfSpectralBands, 1.0);
++	_parametersForCurrentModel.adaxialReflectanceVector.assign(numberOfSpectralBands, 1.0);
+ }
+ 
+ const std::vector<double> & FoliarModel::getLeafAngleDistributionFunctionVector() {
+@@ -44,176 +35,126 @@ const std::vector<double> & FoliarModel::getTransmTransfertFunctionVector() {
+    return _transmTransfertFunctionVector;
+ }
+ 
+-void FoliarModel::setFoliarClumpingA(	const unsigned int& indice,
+-						const double& value) {
+-	_parametersForFoliarModels[indice].clumpingA = value;
++void FoliarModel::setFoliarClumpingA(const double& value) {
++	_parametersForCurrentModel.clumpingA = value;
+ }
+-void FoliarModel::setFoliarClumpingB(	const unsigned int& indice,
+-						const double& value) {
+-	_parametersForFoliarModels[indice].clumpingB = value;
++void FoliarModel::setFoliarClumpingB(const double& value) {
++	_parametersForCurrentModel.clumpingB = value;
+ }
+ 
+-void FoliarModel::setFoliarOmegaMin(const unsigned int& indice,
+-						const double& value) {
+-	_parametersForFoliarModels[indice].omegaMin = value;
++void FoliarModel::setFoliarOmegaMin(const double& value) {
++	_parametersForCurrentModel.omegaMin = value;
+ }
+ 
+-void FoliarModel::setFoliarOmegaMax(const unsigned int& indice,
+-						const double& value) {
+-	_parametersForFoliarModels[indice].omegaMax = value;
++void FoliarModel::setFoliarOmegaMax(const double& value) {
++	_parametersForCurrentModel.omegaMax = value;
+ }
+ 
+-double FoliarModel::getFoliarClumpingA(const unsigned int& indice) {
+-	return _parametersForFoliarModels[indice].clumpingA;
++double FoliarModel::getFoliarClumpingA() {
++	return _parametersForCurrentModel.clumpingA;
+ }
+ 
+-double FoliarModel::getFoliarClumpingB(const unsigned int& indice) {
+-	return _parametersForFoliarModels[indice].clumpingB;
++double FoliarModel::getFoliarClumpingB() {
++	return _parametersForCurrentModel.clumpingB;

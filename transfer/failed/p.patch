@@ -1,0 +1,1105 @@
+From ece1588229dc5b756f90ef9d105b67354420ae5d Mon Sep 17 00:00:00 2001
+From: Vibe <vibe@localhost>
+Date: Tue, 24 Nov 2026 16:13:22 +0000
+Subject: [PATCH] Foliar C-structure cleanup: single-slot per-model storage in
+ FoliarModel/FoliarComputation; CONTEXT.md item 23
+
+- FoliarModel: vector<ParametersForFoliarModels> collapsed to one
+  FoliarModelParameters slot for the current model; all setters/getters lost
+  their model-index parameter; dead fields removed (hasDifferentModelForBottom,
+  typeDiffPhase, tMinLeaf/tMaxLeaf/standardDeviationVector,
+  diffuseTransmittanceAccelerationFactor/bottom...); dead
+  _hotSpotFactorDistributionFunctionVector + unused getters removed;
+  initFoliarModel(numberOfSpectralBands, numberOfDirections)
+- FoliarComputation: _preDiffuseTransfertFunctionVector lost its [modelIndex]
+  level (single slot), references the single params slot; computeClumpingIndex
+  lost its now-unused modelIndex parameter; removed the write-only
+  foliarProperty diffuseTransmittanceAccelerationFactor copies (fields deleted
+  from FoliarProperty)
+- Per-model data computed only when the model is treated:
+  fillFoliarModelMultiplicativeFactors(understory, foliarModel) moved from
+  prepareVegetationDirectionSet to VegetationMaterialWriter::treat() next to
+  computeLadDataForModel (which lost its foliarModelIndice param)
+- This removes the last indexFunction-vs-position mixup (computeFoliarPerBand
+  read the params at getModelIndex()=indexFunction while setters used the loop
+  position)
+- Dead free resizePhaseParametersVectors declaration removed (Phase.hpp)
+- CONTEXT.md: TODO item 17->16 reference fix (a45629a), history item 23
+---
+ CONTEXT.md                                    |  38 +++-
+ Phase/include/Phase.hpp                       |  11 +-
+ Phase/include/PhaseStructure.hpp              |   2 -
+ Phase/include/foliar/FoliarComputation.hpp    |  11 +-
+ Phase/include/foliar/FoliarModel.hpp          | 124 +++-------
+ Phase/src/Phase.cpp                           |  44 ++--
+ Phase/src/PhaseVegetation.cpp                 |  34 ++-
+ Phase/src/foliar/FoliarComputation.cpp        |  72 +++---
+ Phase/src/foliar/FoliarModel.cpp              | 211 +++++++-----------
+ .../materials/VegetationMaterialWriter.cpp    |  39 ++--
+ 10 files changed, 236 insertions(+), 350 deletions(-)
+
+diff --git a/CONTEXT.md b/CONTEXT.md
+index 8f25a8b..33f45a7 100644
+--- a/CONTEXT.md
++++ b/CONTEXT.md
+@@ -260,6 +260,30 @@ Sandbox notes for rebuilding the prefix (no root available):
+     top model when hasDifferentModelForBottom=0. v6 node/attr names:
+     UnderstoryNodeMultiplicativeFactorForLUT /
+     UnderstoryMultiplicativeFactorForLUT / leafTransmittanceFactor.
++23. Foliar C-structure cleanup (this session): FoliarModel now stores ONE
++    FoliarModelParameters slot for the current model (the LAD/g-function
++    vectors were already single-slot since item 16); all setters/getters lost
++    their model-index parameter. Per-model data is computed only when the
++    model is treated: computeLadDataForModel() and the new per-model
++    fillFoliarModelMultiplicativeFactors(understory, foliarModel) are both
++    called from VegetationMaterialWriter::treat() (the fill moved out of
++    prepareVegetationDirectionSet, which no longer loops the models).
++    FoliarComputation's _preDiffuseTransfertFunctionVector lost its
++    [modelIndex] level (single slot [4][dir][dir]) and now references the
++    single FoliarModelParameters slot. This removes the last
++    indexFunction-vs-position mixup: computeFoliarPerBand used to read
++    _parametersForFoliarModels[foliarPropertyParameters.getModelIndex()]
++    (= XML indexFunction) while the setters wrote at the loop position --
++    latent out-of-bounds when indexFunction != position (e.g. template
++    default -1). Removed dead code: struct fields hasDifferentModelForBottom,
++    typeDiffPhase, tMinLeaf/tMaxLeaf/standardDeviationVector,
++    diffuseTransmittanceAccelerationFactor/bottom... (v6 dropped the XML
++    attribute in item 22; the FoliarProperty fields were write-only), the
++    _hotSpotFactorDistributionFunctionVector member + accessors, the unused
++    reflectance/transmittance/acceleration getters, and the dead free
++    resizePhaseParametersVectors declaration (old Phase.hpp:165).
++    initFoliarModel(numberOfSpectralBands, numberOfDirections) only resets
++    the common (direction-set) vectors and the single slot now.
+ 
+ ## Known TODOs / open points (next sessions)
+ 
+@@ -304,14 +328,12 @@ Sandbox notes for rebuilding the prefix (no root available):
+ - librairieDart files NOT in dart_core yet (libIlwis, MakInversionParser,
+   netcdf, yaml, lut/inversion databases, JobWriter): add when a module
+   needs them. MakInversionParser still uses TinyXML (needs port to pugixml).
+-- FOLIAR C-STRUCTURE CLEANUP: continue cleaning the old C Foliar storage
+-  (FoliarModel / FoliarComputation / LADComputation): separate
+-  common-to-all-models data from per-model data (single-slot LAD vectors
+-  already done, history item 17), compute/allocate per-model data only when
+-  the model is treated, and drop it afterwards. Diagnostic (item 17): no
+-  cross-model access exists, except one unintended case where the XML
+-  indexFunction was used for data access instead of the loop position --
+-  fixed by the foliarIndice/outputModelIndex split.
++- FOLIAR C-STRUCTURE CLEANUP: DONE (item 23). Single-slot per-model storage
++  in FoliarModel/FoliarComputation; per-model data computed in treat() only.
++  (Reference note: the single-slot LAD vectors were item 16, commit a45629a;
++  item 17 is the patch-transfer incident of that delivery.) Possible later
++  iterations: equivalentFront/BackLambertian live in the slot although they
++  are only used within treat() -- could become writer locals.
+ - REFACTOR INTO MaterialWriter CLASSES (same pattern as the Lambertian / Hapke
+   / RPV writers): treatSpecular (Phase.cpp:1031), treatPhaseExtern
+   (Phase.cpp:1356), treatMixedMaterial (Phase.cpp:1423).
+diff --git a/Phase/include/Phase.hpp b/Phase/include/Phase.hpp
+index 5cca052..00ee0bb 100644
+--- a/Phase/include/Phase.hpp
++++ b/Phase/include/Phase.hpp
+@@ -161,14 +161,6 @@ int Initialisations(int &,
+                int &,
+                std::vector<Vecteur<double> > & tab_dir_vect);
+ 
+-// Allocate dynamic variable we need.
+-void resizePhaseParametersVectors(	ReflectanceModelsParameters& reflectanceModelsParameters,
+-								std::vector<MultiplicativeFactorForRpv>& parametersForRPVModels,
+-								std::vector<FoliarModel::ParametersForFoliarModels>& parametersForFoliarModels,
+-								std::vector<MultiplicativeFactorForHapke>& parametersForHapkeModels,
+-								std::vector<MultiplicativeFactorForHapke2>& parametersForHapke2Models,
+-								std::vector<MultiplicativeFactorForLambertien>& parametersForLambertianModels);
+-
+ // Initialize PDF array with typeOfLeafAngleDistribution array for a specific foliar distribution.
+ /*
+  int initialisationLadProbabilityDensityFunctions(	const int & NumLAD,
+@@ -396,7 +388,7 @@ double numberOfAngularSectors(	const vector<DirectionCartesienne> & listDirectio
+                    double & solidAnglesSum);
+ void printNumberOfFoliarModels();
+ void readMultiplicativeFactor(const PhaseGeneralParametersDTO & genDTO);
+-void fillFoliarModelMultiplicativeFactors(const PhaseGeneralParametersDTO & genDTO, FoliarModel & foliarModel);
++void fillFoliarModelMultiplicativeFactors(const phsdata::UnderstoryMulti & understory, FoliarModel & foliarModel);
+ FTFoliar foliarPrecomputing(	const PhaseGeneralParametersDTO & genDTO,
+                const vector<DirectionCartesienne> & listDirections,
+                const unsigned int & iterationStepTheta,
+@@ -406,7 +398,6 @@ void computeLadDataForModel(const PhaseGeneralParametersDTO & genDTO,
+                LADComputation & ladComputation,
+                FoliarModel & foliarModel,
+                const phsdata::UnderstoryMulti & understory,
+-				const unsigned int & foliarModelIndice,
+                const unsigned int & outputModelIndex);
+ 
+ unsigned int getUnderstoryDirectionSetIndex(const PhaseGeneralParametersDTO & genDTO, const unsigned int modelPosition);
+diff --git a/Phase/include/PhaseStructure.hpp b/Phase/include/PhaseStructure.hpp
+index e0493fb..96ca60d 100644
+--- a/Phase/include/PhaseStructure.hpp
++++ b/Phase/include/PhaseStructure.hpp
+@@ -154,8 +154,6 @@ struct FoliarProperty {
+    std::vector<double> bottomPSIIBackward;
+    std::vector<double> bottomPSIIForward;
+ 
+-	double diffuseTransmittanceAccelerationFactor;
+-	double bottomDiffuseTransmittanceAccelerationFactor;
+ 
+    int typeOfLeafAngleDistribution;
+    double foliarDimension;
+diff --git a/Phase/include/foliar/FoliarComputation.hpp b/Phase/include/foliar/FoliarComputation.hpp
+index 7f5da86..add6aab 100644
+--- a/Phase/include/foliar/FoliarComputation.hpp
++++ b/Phase/include/foliar/FoliarComputation.hpp
+@@ -64,7 +64,7 @@ private:
+    std::vector<double> _albedoVector;
+    std::vector<double> _albedoSpecVector;
+ 
+-	std::vector<std::vector<std::vector<std::vector<double> > > > _preDiffuseTransfertFunctionVector;
++	std::vector<std::vector<std::vector<double> > > _preDiffuseTransfertFunctionVector; // current model only (single slot): [4 masks][incidentDirection][outputDirection]
+ 
+    std::vector<std::vector<std::vector<double> > > _diffuseTransfertFunctionVector;
+    std::vector<std::vector<std::vector<double> > > _specularTransfertFunctionVector;
+@@ -95,7 +95,7 @@ private:
+ 
+    std::vector<double> & _leafAngleDistributionFunctionVector;
+    std::vector<double> & _gFunctionForLadComputationFunctionVector;
+-	std::vector<FoliarModel::ParametersForFoliarModels> & _parametersForFoliarModels;
++	FoliarModel::FoliarModelParameters & _parametersForCurrentModel;
+    std::vector<double> & _transmTransfertFunctionVector;
+ 
+    bool _topFluorescenceComputation;
+@@ -107,8 +107,8 @@ private:
+    FoliarModel & _foliarModel;
+ 
+ public:
+-	FoliarComputation(FoliarModel & foliarModel) : _numberOfSpectralBands(1), _numberOfFoliarModels(1), _numberOfDirections(100), _numberOfAngularSectors(10), _rad2Deg(180. / M_PI), _nbDisplayedWarningMessages(0), _numberOfThreads(1), _leafAngleDistributionFunctionVector(foliarModel.getRefLeafAngleDistributionFunctionVecto()), _gFunctionForLadComputationFunctionVector(foliarModel.getRefGFunctionForLadComputationFunctionVector()), _parametersForFoliarModels(
+-			foliarModel.getRefParametersForFoliarModels()), _transmTransfertFunctionVector(foliarModel.getRefTransmTransfertFunctionVector()), _topFluorescenceComputation(false), _bottomFluorescenceComputation(false), _foliarModel(foliarModel) {
++	FoliarComputation(FoliarModel & foliarModel) : _numberOfSpectralBands(1), _numberOfFoliarModels(1), _numberOfDirections(100), _numberOfAngularSectors(10), _rad2Deg(180. / M_PI), _nbDisplayedWarningMessages(0), _numberOfThreads(1), _leafAngleDistributionFunctionVector(foliarModel.getRefLeafAngleDistributionFunctionVecto()), _gFunctionForLadComputationFunctionVector(foliarModel.getRefGFunctionForLadComputationFunctionVector()), _parametersForCurrentModel(
++			foliarModel.getRefParametersForCurrentModel()), _transmTransfertFunctionVector(foliarModel.getRefTransmTransfertFunctionVector()), _topFluorescenceComputation(false), _bottomFluorescenceComputation(false), _foliarModel(foliarModel) {
+    }
+ 
+    ~FoliarComputation() {}
+@@ -336,8 +336,7 @@ public:
+                    const string & pathFluorescence);
+ 
+    void computeClumpingIndex(	const std::vector<DirectionCartesienne> & listDirections,
+-					const DirectionCartesienne & sunDirection,
+-					const unsigned int & modelIndex);
++					const DirectionCartesienne & sunDirection);
+ 
+    void transmissionTransferFunction(	const double & theta,
+                    const double & phi,
+diff --git a/Phase/include/foliar/FoliarModel.hpp b/Phase/include/foliar/FoliarModel.hpp
+index 4fc6302..6de3982 100644
+--- a/Phase/include/foliar/FoliarModel.hpp
++++ b/Phase/include/foliar/FoliarModel.hpp
+@@ -13,10 +13,7 @@
+ 
+ class FoliarModel {
+ public:
+-	struct ParametersForFoliarModels {
+-		bool hasDifferentModelForBottom;
+-
+-		int typeDiffPhase;
++	struct FoliarModelParameters {
+        int typeOfLeafAngleDistribution;
+        int numberOfAla;
+        int nthAla;
+@@ -24,9 +21,6 @@ public:
+        unsigned int equivalentFrontLambertian;
+        unsigned int equivalentBackLambertian;
+ 
+-		double tMinLeaf;
+-		double tMaxLeaf;
+-		double standardDeviationVector;
+        double foliarDimension;
+        double hotSpotFactor;
+        double omegaMin;
+@@ -37,8 +31,6 @@ public:
+        double ellipsePrincipalAngle;
+        double ellipseEccentricity;
+ 
+-		double diffuseTransmittanceAccelerationFactor;
+-		double bottomDiffuseTransmittanceAccelerationFactor;
+        std::vector<double> adaxialReflectanceVector; // == TOP
+        std::vector<double> abaxialReflectanceVector; // == BOTTOM
+        std::vector<double> leafTransmittanceVector;
+@@ -46,22 +38,20 @@ public:
+    };
+ 
+ private:
+-	std::vector<FoliarModel::ParametersForFoliarModels> _parametersForFoliarModels;
++	FoliarModelParameters _parametersForCurrentModel; // current model only (single slot)
+    std::vector<double> _transmTransfertFunctionVector; // common to all models (one direction set)
+    std::vector<double> _leafAngleDistributionFunctionVector; // current model only (single slot)
+-	std::vector<std::vector<double> > _hotSpotFactorDistributionFunctionVector;
+    std::vector<double> _gFunctionForLadComputationFunctionVector; // current model only (single slot)
+ 
+ public:
+-	void initFoliarModel(	const unsigned int & numberOfFoliarModels,
+-				const unsigned int & numberOfSpectralBands,
++	void initFoliarModel(	const unsigned int & numberOfSpectralBands,
+                const unsigned int & numberOfDirections);
+ 
+    const std::vector<double> & getLeafAngleDistributionFunctionVector();
+    const std::vector<double> & getTransmTransfertFunctionVector();
+ 
+-	std::vector<FoliarModel::ParametersForFoliarModels> & getRefParametersForFoliarModels() {
+-		return _parametersForFoliarModels;
++	FoliarModelParameters & getRefParametersForCurrentModel() {
++		return _parametersForCurrentModel;
+    }
+    std::vector<double> & getRefTransmTransfertFunctionVector() {
+        return _transmTransfertFunctionVector;
+@@ -75,110 +65,68 @@ public:
+        return _gFunctionForLadComputationFunctionVector;
+    }
+ 
+-	const std::vector<std::vector<double> >& getHotSpotFactorDistributionFunctionVector() const {
+-		return _hotSpotFactorDistributionFunctionVector;
+-	}
+-
+-	void setHotSpotFactorDistributionFunctionVector(const std::vector<std::vector<double> >& hotSpotFactorDistributionFunctionVector) {
+-		_hotSpotFactorDistributionFunctionVector = hotSpotFactorDistributionFunctionVector;
+-	}
+-
+-	void setFoliarClumpingA(const unsigned int& indice,
+-					const double& value);
++	void setFoliarClumpingA(const double& value);
+ 
+-	void setFoliarClumpingB(const unsigned int& indice,
+-					const double& value);
++	void setFoliarClumpingB(const double& value);
+ 
+-	void setFoliarOmegaMin(	const unsigned int& indice,
+-					const double& value);
++	void setFoliarOmegaMin(const double& value);
+ 
+-	void setFoliarOmegaMax(	const unsigned int& indice,
+-					const double& value);
++	void setFoliarOmegaMax(const double& value);
+ 
+-	double getFoliarClumpingA(const unsigned int& indice);
++	double getFoliarClumpingA();
+ 
+-	double getFoliarClumpingB(const unsigned int& indice);
++	double getFoliarClumpingB();
+ 
+-	double getFoliarOmegaMin(const unsigned int& indice);
++	double getFoliarOmegaMin();
+ 
+-	double getFoliarOmegaMax(const unsigned int& indice);
++	double getFoliarOmegaMax();
+ 
+-	void setFoliarDimension(const unsigned int& indice,
+-					const double& value);
++	void setFoliarDimension(const double& value);
+ 
+-	double getFoliarDimension(const unsigned int& indice);
+-	//
++	double getFoliarDimension();
+ 
+-	double getHotSpotFactor(const unsigned int& indice) const;
++	double getHotSpotFactor() const;
+ 
+-	void setHotSpotFactor(const unsigned int& indice,
+-					const double& value);
++	void setHotSpotFactor(const double& value);
+ 
+-	void setFoliarAverageLeafAngle(	const unsigned int& indice,
+-								const double& value);
++	void setFoliarAverageLeafAngle(const double& value);
+ 
+-	double getFoliarAverageLeafAngle(const unsigned int& indice);
++	double getFoliarAverageLeafAngle();
+ 
+-	void setNumberOfAla(const int& indice,
+-					const int& value);
++	void setNumberOfAla(const int& value);
+ 
+-	int getNumberOfAla(const int& indice);
++	int getNumberOfAla();
+ 
+-	void setNthAla(	const int& indice,
+-					const int& value);
++	void setNthAla(const int& value);
+ 
+-	int getNthOfAla(const int& indice);
++	int getNthOfAla();
+ 
+-	void setFoliarEllipsePrincipalAngle(const unsigned int& indice,
+-									const double& value);
++	void setFoliarEllipsePrincipalAngle(const double& value);
+ 
+-	void setFoliarEllipseEccentricity(	const unsigned int& indice,
+-									const double& value);
++	void setFoliarEllipseEccentricity(const double& value);
+ 
+-	double getFoliarEllipsePrincipalAngle(const unsigned int& indice);
++	double getFoliarEllipsePrincipalAngle();
+ 
+-	double getFoliarEllipseEccentricity(const unsigned int& indice);
++	double getFoliarEllipseEccentricity();
+ 
+-	void setFoliarTypeOfLeafAngleDistribution(	const unsigned int& indice,
+-									const int& value);
++	void setFoliarTypeOfLeafAngleDistribution(const int& value);
+ 
+-	int getFoliarTypeOfLeafAngleDistribution(const unsigned int& indice);
++	int getFoliarTypeOfLeafAngleDistribution();
+ 
+-
+-	void setAbaxialDiffuseTransmittanceAccelerationForFoliar(	const unsigned int& indice,
+-									const double & value);
+-	void setAdaxialDiffuseTransmittanceAccelerationForFoliar(	const unsigned int& indice,
+-									const double & value);
+-	double getAbaxialDiffuseTransmittanceAccelerationForFoliar(	const unsigned int& indice) const;
+-	double getAdaxialDiffuseTransmittanceAccelerationForFoliar(	const unsigned int& indice) const;
+-
+-
+-	void setAdaxialReflectanceForFoliar(const unsigned int& indice,
+-								const unsigned int& spectralBand,
++	void setAdaxialReflectanceForFoliar(	const unsigned int& spectralBand,
+                                const double & value);
+ 
+-	void setAbaxialReflectanceForFoliar(const unsigned int& indice,
+-								const unsigned int& spectralBand,
++	void setAbaxialReflectanceForFoliar(	const unsigned int& spectralBand,
+                                const double & value);
+ 
+-	void setLeafTransmittanceForFoliar(	const unsigned int& indice,
+-								const unsigned int& spectralBand,
++	void setLeafTransmittanceForFoliar(	const unsigned int& spectralBand,
+                                const double & value,
+                                const bool & isBottomFace);
+ 
+-	double getAdaxialReflectanceForFoliar(	const unsigned int& indice,
+-								const unsigned int& spectralBand);
+-
+-
+-	double getAbaxialReflectanceForFoliar(	const unsigned int& indice,
+-								const unsigned int& spectralBand);
+-
+-
+-	double getLeafTransmittanceForFoliar(	const unsigned int& indice,
+-								const unsigned int& spectralBand,
+-								const bool & isBottomFace);
+-
+-
+-	void setEquivalentFrontLambertianIndex(const unsigned int foliarIndex, const unsigned int lambertianIndex);
+-	void setEquivalentBackLambertianIndex(const unsigned int foliarIndex, const unsigned int lambertianIndex);
+-	unsigned int getEquivalentFrontLambertianIndex(const unsigned int foliarIndex) const;
+-	unsigned int getEquivalentBackLambertianIndex(const unsigned int foliarIndex) const;
++	void setEquivalentFrontLambertianIndex(const unsigned int lambertianIndex);
++	void setEquivalentBackLambertianIndex(const unsigned int lambertianIndex);
++	unsigned int getEquivalentFrontLambertianIndex() const;
++	unsigned int getEquivalentBackLambertianIndex() const;
+ 
+ };
+ 
+diff --git a/Phase/src/Phase.cpp b/Phase/src/Phase.cpp
+index 22ba356..47049d9 100755
+--- a/Phase/src/Phase.cpp
++++ b/Phase/src/Phase.cpp
+@@ -2342,8 +2342,7 @@ void prepareProspect(PhaseGeneralParametersDTO & genDTO) {
+  * (UnderstoryMulti) into the per-model FoliarModel parameters and computes its
+  * leaf angle distribution into the single-slot LAD vectors of FoliarModel.
+  * Called from VegetationMaterialWriter::treat() for the model currently being
+- * treated, so no other model's LAD data is ever stored. foliarModelIndice is
+- * the model position (indexes the per-model FoliarModel parameters);
++ * treated, so no other model's LAD data is ever stored (single-slot storage).
+  * outputModelIndex (XML indexFunction) is only used to name the optional LAD
+  * output file.
+  */
+@@ -2351,46 +2350,45 @@ void computeLadDataForModel(const PhaseGeneralParametersDTO & genDTO,
+                LADComputation & ladComputation,
+                FoliarModel & foliarModel,
+                const phsdata::UnderstoryMulti & understory,
+-				const unsigned int & foliarModelIndice,
+-				const unsigned int & outputModelIndex) {
++					const unsigned int & outputModelIndex) {
+    ofstream writeOutputLeafAngleDistribution;
+    ofstream writeOutputElliptical;
+ 
+    // Port the phsdata storage into the per-model FoliarModel parameters
+-	foliarModel.setFoliarTypeOfLeafAngleDistribution(foliarModelIndice, understory.lad);
+-	foliarModel.setFoliarClumpingA(foliarModelIndice, understory.clumpingA);
+-	foliarModel.setFoliarClumpingB(foliarModelIndice, understory.clumpingB);
+-	foliarModel.setFoliarOmegaMin(foliarModelIndice, understory.omegaMin);
+-	foliarModel.setFoliarOmegaMax(foliarModelIndice, understory.omegaMax);
+-	foliarModel.setFoliarDimension(foliarModelIndice, understory.dimFoliar);
+-	foliarModel.setHotSpotFactor(foliarModelIndice, understory.thermalHotSpotFactor);
++	foliarModel.setFoliarTypeOfLeafAngleDistribution(understory.lad);
++	foliarModel.setFoliarClumpingA(understory.clumpingA);
++	foliarModel.setFoliarClumpingB(understory.clumpingB);
++	foliarModel.setFoliarOmegaMin(understory.omegaMin);
++	foliarModel.setFoliarOmegaMax(understory.omegaMax);
++	foliarModel.setFoliarDimension(understory.dimFoliar);
++	foliarModel.setHotSpotFactor(understory.thermalHotSpotFactor);
+ 
+    switch (understory.lad) {
+        case globalReferences::ELLIPS:
+            if (understory.ellipsoidalAla.is_initialized() && understory.ellipsoidalAla.value() >= 1e-10) {
+-				foliarModel.setFoliarAverageLeafAngle(foliarModelIndice, understory.ellipsoidalAla.value());
++				foliarModel.setFoliarAverageLeafAngle(understory.ellipsoidalAla.value());
+                ladComputation.computeEllipsoidalLadDistribution(understory.ellipsoidalAla.value());
+            } else {
+-				foliarModel.setFoliarTypeOfLeafAngleDistribution(foliarModelIndice, globalReferences::HORIZ);
++				foliarModel.setFoliarTypeOfLeafAngleDistribution(globalReferences::HORIZ);
+                ladComputation.computeVerticalHorizontalLadDistribution(0);
+            }
+            break;
+        case globalReferences::BOUNDEDUNI:
+-			foliarModel.setNumberOfAla(foliarModelIndice, understory.boundedUniformNbAla.value_or(1));
+-			foliarModel.setNthAla(foliarModelIndice, understory.boundedUniformNthAla.value_or(1));
+-			ladComputation.computeBoundedUniformLadDistribution(foliarModel.getNumberOfAla(foliarModelIndice),
+-					foliarModel.getNthOfAla(foliarModelIndice));
++			foliarModel.setNumberOfAla(understory.boundedUniformNbAla.value_or(1));
++			foliarModel.setNthAla(understory.boundedUniformNthAla.value_or(1));
++			ladComputation.computeBoundedUniformLadDistribution(foliarModel.getNumberOfAla(),
++					foliarModel.getNthOfAla());
+            break;
+ 
+        case globalReferences::ELLIPT:
+-			foliarModel.setFoliarEllipsePrincipalAngle(foliarModelIndice, understory.ellipticalThetaM.value_or(0.));
+-			foliarModel.setFoliarEllipseEccentricity(foliarModelIndice, understory.ellipticalEpsilon.value_or(0.));
+-			ladComputation.computeEllipticalLadDistribution(foliarModel.getFoliarEllipsePrincipalAngle(foliarModelIndice),
+-					foliarModel.getFoliarEllipseEccentricity(foliarModelIndice));
++			foliarModel.setFoliarEllipsePrincipalAngle(understory.ellipticalThetaM.value_or(0.));
++			foliarModel.setFoliarEllipseEccentricity(understory.ellipticalEpsilon.value_or(0.));
++			ladComputation.computeEllipticalLadDistribution(foliarModel.getFoliarEllipsePrincipalAngle(),
++					foliarModel.getFoliarEllipseEccentricity());
+            ladComputation.writeEllipticalLad(writeOutputElliptical);
+            break;
+        case globalReferences::HORIZ:
+-			foliarModel.setFoliarTypeOfLeafAngleDistribution(foliarModelIndice, globalReferences::HORIZ);
++			foliarModel.setFoliarTypeOfLeafAngleDistribution(globalReferences::HORIZ);
+            ladComputation.computeVerticalHorizontalLadDistribution(0);
+            break;
+        case globalReferences::VERTI:
+@@ -2412,7 +2410,7 @@ void computeLadDataForModel(const PhaseGeneralParametersDTO & genDTO,
+    }
+    if (genDTO.isAskedForWritingLadResultsCheck == 1) {
+        ladComputation.writeLad(outputModelIndex, writeOutputLeafAngleDistribution,
+-				foliarModel.getFoliarTypeOfLeafAngleDistribution(foliarModelIndice));
++				foliarModel.getFoliarTypeOfLeafAngleDistribution());
+    }
+ }
+ 
+diff --git a/Phase/src/PhaseVegetation.cpp b/Phase/src/PhaseVegetation.cpp
+index f3d9789..f81a18a 100644
+--- a/Phase/src/PhaseVegetation.cpp
++++ b/Phase/src/PhaseVegetation.cpp
+@@ -45,7 +45,7 @@ VegetationVolumeMaterials processVegetationVolumeMaterials(PhaseGeneralParameter
+    return vegetation;
+ }
+ 
+-static void fillFoliarModelFaceMultiplicativeFactors(FoliarModel & foliarModel, const unsigned int modelPosition,
++static void fillFoliarModelFaceMultiplicativeFactors(FoliarModel & foliarModel,
+        const phsdata::UnderstoryModel * model, const bool isBottomFace, const unsigned int numberOfBands) {
+    if (model == nullptr || !model->useMultiplicativeFactorForLUT || !model->nodeMultiplicativeFactor.is_initialized())
+        return;
+@@ -53,40 +53,35 @@ static void fillFoliarModelFaceMultiplicativeFactors(FoliarModel & foliarModel,
+    for (unsigned int sbi = 0; sbi < numberOfBands && sbi < mfl.factors.size(); ++sbi) {
+        auto umf = std::static_pointer_cast<const phsdata::UnderstoryMultiplicativeFactor>(mfl.factors[sbi]);
+        if (isBottomFace)
+-			foliarModel.setAbaxialReflectanceForFoliar(modelPosition, sbi, umf->reflectanceFactor);
++			foliarModel.setAbaxialReflectanceForFoliar(sbi, umf->reflectanceFactor);
+        else
+-			foliarModel.setAdaxialReflectanceForFoliar(modelPosition, sbi, umf->reflectanceFactor);
+-		foliarModel.setLeafTransmittanceForFoliar(modelPosition, sbi, umf->leafTransmittanceFactor, isBottomFace);
++			foliarModel.setAdaxialReflectanceForFoliar(sbi, umf->reflectanceFactor);
++		foliarModel.setLeafTransmittanceForFoliar(sbi, umf->leafTransmittanceFactor, isBottomFace);
+    }
+ }
+ 
+-void fillFoliarModelMultiplicativeFactors(const PhaseGeneralParametersDTO & genDTO, FoliarModel & foliarModel) {
++void fillFoliarModelMultiplicativeFactors(const phsdata::UnderstoryMulti & understory, FoliarModel & foliarModel) {
+    const unsigned int numberOfBands = PhaseProperty::getNumberOfSpectralBands();
+-	for (unsigned int modelPosition = 0; modelPosition < genDTO._volumesMaterials.understoryMultiFunctions.size(); ++modelPosition) {
+-		const phsdata::UnderstoryMulti & understory = *genDTO._volumesMaterials.understoryMultiFunctions[modelPosition];
+-		const phsdata::UnderstoryModel * topModel = understory.getTopModel();
+-		const phsdata::UnderstoryModel * bottomModel = understory.getBottomModel();
+-		if (bottomModel == nullptr)
+-			bottomModel = topModel;
+-		fillFoliarModelFaceMultiplicativeFactors(foliarModel, modelPosition, topModel, false, numberOfBands);
+-		fillFoliarModelFaceMultiplicativeFactors(foliarModel, modelPosition, bottomModel, true, numberOfBands);
+-	}
++	const phsdata::UnderstoryModel * topModel = understory.getTopModel();
++	const phsdata::UnderstoryModel * bottomModel = understory.getBottomModel();
++	if (bottomModel == nullptr)
++		bottomModel = topModel;
++	fillFoliarModelFaceMultiplicativeFactors(foliarModel, topModel, false, numberOfBands);
++	fillFoliarModelFaceMultiplicativeFactors(foliarModel, bottomModel, true, numberOfBands);
+ }
+ 
+ /**
+  * (Re)initialises the shared foliar objects for one direction set and runs the
+  * direction-set-dependent precomputing. Called by VegetationMaterialWriter
+- * whenever the direction set changes between models (the per-model data filled
+- * by fillFoliarModelMultiplicativeFactors is reset by initFoliarModel, so it is
+- * redone here as well; the per-model LAD is computed later in treat(), per
+- * model).
++ * whenever the direction set changes between models (the per-model data is
++ * reset by initFoliarModel, so it is recomputed in treat(), per model).
+  */
+ void prepareVegetationDirectionSet(PhaseGeneralParametersDTO & genDTO, VegetationVolumeMaterials & vegetation, const unsigned int directionSetIndex) {
+    const unsigned int numberOfFoliarModels = genDTO._volumesMaterials.understoryMultiFunctions.size();
+    const vector<DirectionCartesienne> & listDirections = genDTO._directionSet[directionSetIndex]._directions;
+    const unsigned int numberOfDirections = listDirections.size();
+ 
+-	vegetation.foliarModel->initFoliarModel(numberOfFoliarModels, PhaseProperty::_numberOfSpectralBands,
++	vegetation.foliarModel->initFoliarModel(PhaseProperty::_numberOfSpectralBands,
+            numberOfDirections);
+ 
+    vegetation.foliarComputation->initFoliarComputation(numberOfDirections,
+@@ -99,7 +94,6 @@ void prepareVegetationDirectionSet(PhaseGeneralParametersDTO & genDTO, Vegetatio
+     PhaseProperty::resizePhaseParametersVectors();
+ 
+    readMultiplicativeFactor(genDTO);
+-	fillFoliarModelMultiplicativeFactors(genDTO, *vegetation.foliarModel);
+     printNumberOfFoliarModels();
+ 
+     int iterationStepPhi = genDTO._volumesMaterials.integrationStepOnPhi;
+diff --git a/Phase/src/foliar/FoliarComputation.cpp b/Phase/src/foliar/FoliarComputation.cpp
+index debca92..106a04b 100644
+--- a/Phase/src/foliar/FoliarComputation.cpp
++++ b/Phase/src/foliar/FoliarComputation.cpp
+@@ -48,11 +48,9 @@ void FoliarComputation::initFoliarComputation(	const unsigned int & numberOfDire
+    }
+ 
+    // New precomputation
+-	_preDiffuseTransfertFunctionVector.resize(numberOfFoliarModels, std::vector<std::vector<std::vector<double> > >(4));
+-	for (unsigned int q = 0; q < numberOfFoliarModels; q++) {
+-		for (unsigned int i = 0; i < 4; i++) {
+-			_preDiffuseTransfertFunctionVector[q][i].resize(_numberOfDirections, std::vector<double>(_numberOfDirections));
+-		}
++	_preDiffuseTransfertFunctionVector.resize(4);
++	for (unsigned int i = 0; i < 4; i++) {
++		_preDiffuseTransfertFunctionVector[i].resize(_numberOfDirections, std::vector<double>(_numberOfDirections));
+    }
+ }
+ 
+@@ -146,23 +144,20 @@ void FoliarComputation::computeFoliarPerBand(	FoliarProperty & foliarProperty,
+    _albedoVector[spectralBandIndex] = 0;
+    _albedoSpecVector[spectralBandIndex] = 0;
+ 
+-	foliarProperty.diffuseTransmittanceAccelerationFactor = _parametersForFoliarModels[modelIndex].diffuseTransmittanceAccelerationFactor;
+-	foliarProperty.bottomDiffuseTransmittanceAccelerationFactor = _parametersForFoliarModels[modelIndex].bottomDiffuseTransmittanceAccelerationFactor;
+-
+-	foliarProperty.typeOfLeafAngleDistribution = _parametersForFoliarModels[modelIndex].typeOfLeafAngleDistribution;
+-	foliarProperty.foliarDimension = _parametersForFoliarModels[modelIndex].foliarDimension;
++	foliarProperty.typeOfLeafAngleDistribution = _parametersForCurrentModel.typeOfLeafAngleDistribution;
++	foliarProperty.foliarDimension = _parametersForCurrentModel.foliarDimension;
+ 
+    foliarProperty.reflectanceTop = 0.01 * foliarDatabaseParameters->getTopReflectanceForBand(spectralBandIndex)
+-			* _parametersForFoliarModels[modelIndex].adaxialReflectanceVector[spectralBandIndex];
++			* _parametersForCurrentModel.adaxialReflectanceVector[spectralBandIndex];
+ 
+    foliarProperty.reflectanceBottom = 0.01 * foliarDatabaseParameters->getBottomReflectanceForBand(spectralBandIndex)
+-			* _parametersForFoliarModels[modelIndex].abaxialReflectanceVector[spectralBandIndex];
++			* _parametersForCurrentModel.abaxialReflectanceVector[spectralBandIndex];
+ 
+    foliarProperty.transmittance = 0.01 * foliarDatabaseParameters->getTransmittanceForBand(spectralBandIndex)
+-			* _parametersForFoliarModels[modelIndex].leafTransmittanceVector[spectralBandIndex];
++			* _parametersForCurrentModel.leafTransmittanceVector[spectralBandIndex];
+ 
+    foliarProperty.bottomTransmittance = 0.01 * foliarDatabaseParameters->getBottomTransmittanceForBand(spectralBandIndex)
+-			* _parametersForFoliarModels[modelIndex].bottomLeafTransmittanceVector[spectralBandIndex];
++			* _parametersForCurrentModel.bottomLeafTransmittanceVector[spectralBandIndex];
+ 
+    if (_topFluorescenceComputation || _bottomFluorescenceComputation) {
+        foliarProperty.topPSIBackward.resize(_numberOfSpectralBands);
+@@ -366,10 +361,10 @@ void FoliarComputation::preComputeTransfertFunctionOfFoliarDiffuse(	const std::v
+        if (_transmTransfertFunctionVector[incidentDirection] < EPSILON) {
+            double solidAngleCorrection = listDirections[outputDirection].getCosThetaDOmega()
+                    / (std::cos(listDirections[outputDirection].getCenterTheta()) * listDirections[outputDirection].getSolidAngle());
+-			_preDiffuseTransfertFunctionVector[modelIndex][idMaskFoliarProperty][incidentDirection][outputDirection] = integranddTheta
++			_preDiffuseTransfertFunctionVector[idMaskFoliarProperty][incidentDirection][outputDirection] = integranddTheta
+                    * listDirections[outputDirection].getSolidAngle() * solidAngleCorrection * _clumpingIndex[incidentDirection] * iterationStepPhi;
+        } else {
+-			_preDiffuseTransfertFunctionVector[modelIndex][idMaskFoliarProperty][incidentDirection][outputDirection] = integranddTheta
++			_preDiffuseTransfertFunctionVector[idMaskFoliarProperty][incidentDirection][outputDirection] = integranddTheta
+                    * _foliarPrecomputedNormalisation[incidentDirection][outputDirection];
+        }
+    }
+@@ -475,12 +470,12 @@ void FoliarComputation::computeTransfertFunctionOfFoliarDiffuse(const std::vecto
+                                const unsigned int & modelIndex,
+                                const unsigned int & reflectanceMode) {
+    // A + B + C + D
+-	double fReflectanceTop = opticalProperties.reflectanceTop * _preDiffuseTransfertFunctionVector[modelIndex][0][incidentDirection][outputDirection];
++	double fReflectanceTop = opticalProperties.reflectanceTop * _preDiffuseTransfertFunctionVector[0][incidentDirection][outputDirection];
+    double fReflectanceBottom = opticalProperties.reflectanceBottom
+-			* _preDiffuseTransfertFunctionVector[modelIndex][1][incidentDirection][outputDirection];
+-	double fTransmittance = opticalProperties.transmittance * _preDiffuseTransfertFunctionVector[modelIndex][2][incidentDirection][outputDirection];
++			* _preDiffuseTransfertFunctionVector[1][incidentDirection][outputDirection];
++	double fTransmittance = opticalProperties.transmittance * _preDiffuseTransfertFunctionVector[2][incidentDirection][outputDirection];
+    double fTransmittanceBottom = opticalProperties.bottomTransmittance
+-			* _preDiffuseTransfertFunctionVector[modelIndex][3][incidentDirection][outputDirection];
++			* _preDiffuseTransfertFunctionVector[3][incidentDirection][outputDirection];
+ 
+    _diffuseTransfertFunctionVector[reflectanceMode][incidentDirection][outputDirection] = fReflectanceTop + fReflectanceBottom + fTransmittance
+            + fTransmittanceBottom;
+@@ -498,12 +493,12 @@ void FoliarComputation::computeFluorescenceTransferFunction(const std::vector<Di
+ //	double bottomAbsorption = (1. - opticalProperties.reflectanceBottom - opticalProperties.bottomTransmittance);
+    for (unsigned int bandId = 0; bandId < _numberOfSpectralBands; ++bandId) {
+        if (_topFluorescenceComputation) {
+-			_fluorescenceDirectionTransferMatrixPSI[reflectanceMode * _numberOfSpectralBands + bandId][incidentDirection * (_numberOfDirections) + outputDirection] += _preDiffuseTransfertFunctionVector[modelIndex][0][incidentDirection][outputDirection] * _frontFaceFluorescenceMatrix[reflectanceMode][bandId][0] + _preDiffuseTransfertFunctionVector[modelIndex][2][incidentDirection][outputDirection] * _frontFaceFluorescenceMatrix[reflectanceMode][bandId][2];
+-			_fluorescenceDirectionTransferMatrixPSII[reflectanceMode * _numberOfSpectralBands + bandId][incidentDirection * (_numberOfDirections) + outputDirection] += _preDiffuseTransfertFunctionVector[modelIndex][0][incidentDirection][outputDirection] * _frontFaceFluorescenceMatrix[reflectanceMode][bandId][1] + _preDiffuseTransfertFunctionVector[modelIndex][2][incidentDirection][outputDirection] * _frontFaceFluorescenceMatrix[reflectanceMode][bandId][3];
++			_fluorescenceDirectionTransferMatrixPSI[reflectanceMode * _numberOfSpectralBands + bandId][incidentDirection * (_numberOfDirections) + outputDirection] += _preDiffuseTransfertFunctionVector[0][incidentDirection][outputDirection] * _frontFaceFluorescenceMatrix[reflectanceMode][bandId][0] + _preDiffuseTransfertFunctionVector[2][incidentDirection][outputDirection] * _frontFaceFluorescenceMatrix[reflectanceMode][bandId][2];
++			_fluorescenceDirectionTransferMatrixPSII[reflectanceMode * _numberOfSpectralBands + bandId][incidentDirection * (_numberOfDirections) + outputDirection] += _preDiffuseTransfertFunctionVector[0][incidentDirection][outputDirection] * _frontFaceFluorescenceMatrix[reflectanceMode][bandId][1] + _preDiffuseTransfertFunctionVector[2][incidentDirection][outputDirection] * _frontFaceFluorescenceMatrix[reflectanceMode][bandId][3];
+        }
+        if (_bottomFluorescenceComputation) {
+-			_fluorescenceDirectionTransferMatrixPSI[reflectanceMode * _numberOfSpectralBands + bandId][incidentDirection * (_numberOfDirections) + outputDirection] += _preDiffuseTransfertFunctionVector[modelIndex][1][incidentDirection][outputDirection] * _backFaceFluorescenceMatrix[reflectanceMode][bandId][0] + _preDiffuseTransfertFunctionVector[modelIndex][3][incidentDirection][outputDirection] * _backFaceFluorescenceMatrix[reflectanceMode][bandId][2];
+-			_fluorescenceDirectionTransferMatrixPSII[reflectanceMode * _numberOfSpectralBands + bandId][incidentDirection * (_numberOfDirections) + outputDirection] += _preDiffuseTransfertFunctionVector[modelIndex][1][incidentDirection][outputDirection] * _backFaceFluorescenceMatrix[reflectanceMode][bandId][1] + _preDiffuseTransfertFunctionVector[modelIndex][3][incidentDirection][outputDirection] * _backFaceFluorescenceMatrix[reflectanceMode][bandId][3];
++			_fluorescenceDirectionTransferMatrixPSI[reflectanceMode * _numberOfSpectralBands + bandId][incidentDirection * (_numberOfDirections) + outputDirection] += _preDiffuseTransfertFunctionVector[1][incidentDirection][outputDirection] * _backFaceFluorescenceMatrix[reflectanceMode][bandId][0] + _preDiffuseTransfertFunctionVector[3][incidentDirection][outputDirection] * _backFaceFluorescenceMatrix[reflectanceMode][bandId][2];
++			_fluorescenceDirectionTransferMatrixPSII[reflectanceMode * _numberOfSpectralBands + bandId][incidentDirection * (_numberOfDirections) + outputDirection] += _preDiffuseTransfertFunctionVector[1][incidentDirection][outputDirection] * _backFaceFluorescenceMatrix[reflectanceMode][bandId][1] + _preDiffuseTransfertFunctionVector[3][incidentDirection][outputDirection] * _backFaceFluorescenceMatrix[reflectanceMode][bandId][3];
+        }
+    }
+ }
+@@ -1100,17 +1095,17 @@ void FoliarComputation::writeFoliar(const unsigned int& modelIndex,
+    pkmg.setBandeSpectrale(spectralBandIndex);
+    outCoeffSpecProperties << pkmg.clePhaseUtilisee() << "1" << std::endl;
+    outCoeffSpecProperties << pkmg.cleNomFichier() << modelName << std::endl;
+-	outCoeffSpecProperties << pkmg.cleOmegaMin() << _foliarModel.getFoliarOmegaMin(modelIndex) << std::endl;
+-	outCoeffSpecProperties << pkmg.cleOmegaMax() << _foliarModel.getFoliarOmegaMax(modelIndex) << std::endl;
+-	outCoeffSpecProperties << pkmg.cleClumpingA() << _foliarModel.getFoliarClumpingA(modelIndex) << std::endl;
+-	outCoeffSpecProperties << pkmg.cleClumpingB() << _foliarModel.getFoliarClumpingB(modelIndex) << std::endl;
++	outCoeffSpecProperties << pkmg.cleOmegaMin() << _foliarModel.getFoliarOmegaMin() << std::endl;
++	outCoeffSpecProperties << pkmg.cleOmegaMax() << _foliarModel.getFoliarOmegaMax() << std::endl;
++	outCoeffSpecProperties << pkmg.cleClumpingA() << _foliarModel.getFoliarClumpingA() << std::endl;
++	outCoeffSpecProperties << pkmg.cleClumpingB() << _foliarModel.getFoliarClumpingB() << std::endl;
+    outCoeffSpecProperties << pkmg.cleLAD() << foliarPropertyVector[spectralBandIndex].typeOfLeafAngleDistribution << std::endl;
+ 
+    if (foliarPropertyVector[spectralBandIndex].typeOfLeafAngleDistribution == globalReferences::ELLIPS) {
+-		outCoeffSpecProperties << pkmg.cleALA() << _foliarModel.getFoliarAverageLeafAngle(modelIndex) << std::endl;
++		outCoeffSpecProperties << pkmg.cleALA() << _foliarModel.getFoliarAverageLeafAngle() << std::endl;
+    } else if (foliarPropertyVector[spectralBandIndex].typeOfLeafAngleDistribution == globalReferences::ELLIPT) {
+-		outCoeffSpecProperties << pkmg.cleThetaM() << _foliarModel.getFoliarEllipsePrincipalAngle(modelIndex) << std::endl;
+-		outCoeffSpecProperties << pkmg.cleEccentricity() << _foliarModel.getFoliarEllipseEccentricity(modelIndex) << std::endl;
++		outCoeffSpecProperties << pkmg.cleThetaM() << _foliarModel.getFoliarEllipsePrincipalAngle() << std::endl;
++		outCoeffSpecProperties << pkmg.cleEccentricity() << _foliarModel.getFoliarEllipseEccentricity() << std::endl;
+    }
+    outCoeffSpecProperties << pkmg.cleDimensionFoliaire() << foliarPropertyVector[spectralBandIndex].foliarDimension << std::endl;
+    outCoeffSpecProperties << pkmg.cleRoSuperieur() << foliarPropertyVector[spectralBandIndex].reflectanceTop << std::endl;
+@@ -1411,23 +1406,22 @@ void FoliarComputation::writeTransmittance(	const FTFoliar & fTFoliar,
+ }
+ 
+ void FoliarComputation::computeClumpingIndex(	const std::vector<DirectionCartesienne> & listDirections,
+-								const DirectionCartesienne & sunDirection,
+-								const unsigned int & modelIndex) {
++								const DirectionCartesienne & sunDirection) {
+    double theta = 0;
+    for (int incidentDirection = 0; incidentDirection < listDirections.size(); incidentDirection++) {
+        const DirectionCartesienne & inDir = incidentDirection == listDirections.size() ? sunDirection: listDirections[incidentDirection];
+        theta = inDir.getCenterTheta();
+-		if (fabs(_foliarModel.getFoliarOmegaMin(modelIndex) - _foliarModel.getFoliarOmegaMax(modelIndex)) < EPSILON
+-				&& fabs(_foliarModel.getFoliarOmegaMax(modelIndex) - _foliarModel.getFoliarClumpingA(modelIndex)) < EPSILON) {
+-			_clumpingIndex[incidentDirection] = _foliarModel.getFoliarClumpingA(modelIndex) + _foliarModel.getFoliarClumpingB(modelIndex) * theta;
++		if (fabs(_foliarModel.getFoliarOmegaMin() - _foliarModel.getFoliarOmegaMax()) < EPSILON
++				&& fabs(_foliarModel.getFoliarOmegaMax() - _foliarModel.getFoliarClumpingA()) < EPSILON) {
++			_clumpingIndex[incidentDirection] = _foliarModel.getFoliarClumpingA() + _foliarModel.getFoliarClumpingB() * theta;
+            _transmTransfertFunctionVector[incidentDirection] *= _clumpingIndex[incidentDirection];
+        } else {
+            if (theta > 90.) {
+                theta = 180 - theta;
+            }
+-			_clumpingIndex[incidentDirection] = _foliarModel.getFoliarOmegaMin(modelIndex)
+-				+ _foliarModel.getFoliarOmegaMax(modelIndex)
+-						/ (1 + exp(-_foliarModel.getFoliarClumpingA(modelIndex) * (theta - _foliarModel.getFoliarClumpingB(modelIndex))));
++			_clumpingIndex[incidentDirection] = _foliarModel.getFoliarOmegaMin()
++					+ _foliarModel.getFoliarOmegaMax()
++							/ (1 + exp(-_foliarModel.getFoliarClumpingA() * (theta - _foliarModel.getFoliarClumpingB())));
+            _transmTransfertFunctionVector[incidentDirection] *= _clumpingIndex[incidentDirection];
+        }
+    }
+diff --git a/Phase/src/foliar/FoliarModel.cpp b/Phase/src/foliar/FoliarModel.cpp
+index f993787..9bf22ac 100644
+--- a/Phase/src/foliar/FoliarModel.cpp
++++ b/Phase/src/foliar/FoliarModel.cpp
+@@ -7,33 +7,24 @@
+ 
+ #include "../../include/foliar/FoliarModel.hpp"
+ 
+-void FoliarModel::initFoliarModel(	const unsigned int & numberOfFoliarModels,
+-						const unsigned int & numberOfSpectralBands,
++void FoliarModel::initFoliarModel(	const unsigned int & numberOfSpectralBands,
+                        const unsigned int & numberOfDirections) {
+ 
+    _leafAngleDistributionFunctionVector.resize(NBMAX_TETAF + 1);
+    _transmTransfertFunctionVector.resize(numberOfDirections + 1);
+-
+-	_parametersForFoliarModels.resize(numberOfFoliarModels);
+-	for (unsigned int index = 0; index < numberOfFoliarModels; index++) {
+-		_parametersForFoliarModels[index].averageLeafAngle = 0.0;
+-		_parametersForFoliarModels[index].ellipsePrincipalAngle = 0.0;
+-		_parametersForFoliarModels[index].ellipseEccentricity = 0.0;
+-		_parametersForFoliarModels[index].omegaMin = 0.0;
+-		_parametersForFoliarModels[index].omegaMax = 0.0;
+-		_parametersForFoliarModels[index].clumpingA = 0.0;
+-		_parametersForFoliarModels[index].clumpingB = 0.0;
+-	}
+-
+-	for (unsigned int j = 0; j < numberOfFoliarModels; j++) {
+-		_parametersForFoliarModels[j].diffuseTransmittanceAccelerationFactor = 0.;
+-		_parametersForFoliarModels[j].leafTransmittanceVector.resize(numberOfSpectralBands, 1.0);
+-		_parametersForFoliarModels[j].bottomLeafTransmittanceVector.resize(numberOfSpectralBands, 1.0);
+-		_parametersForFoliarModels[j].abaxialReflectanceVector.resize(numberOfSpectralBands, 1.0);
+-		_parametersForFoliarModels[j].adaxialReflectanceVector.resize(numberOfSpectralBands, 1.0);
+-	}
+-
+    _gFunctionForLadComputationFunctionVector.resize(NBMAX_TETAF * 2 + 1);
++
++	_parametersForCurrentModel.averageLeafAngle = 0.0;
++	_parametersForCurrentModel.ellipsePrincipalAngle = 0.0;
++	_parametersForCurrentModel.ellipseEccentricity = 0.0;
++	_parametersForCurrentModel.omegaMin = 0.0;
++	_parametersForCurrentModel.omegaMax = 0.0;
++	_parametersForCurrentModel.clumpingA = 0.0;
++	_parametersForCurrentModel.clumpingB = 0.0;
++	_parametersForCurrentModel.leafTransmittanceVector.assign(numberOfSpectralBands, 1.0);
++	_parametersForCurrentModel.bottomLeafTransmittanceVector.assign(numberOfSpectralBands, 1.0);
++	_parametersForCurrentModel.abaxialReflectanceVector.assign(numberOfSpectralBands, 1.0);
++	_parametersForCurrentModel.adaxialReflectanceVector.assign(numberOfSpectralBands, 1.0);
+ }
+ 
+ const std::vector<double> & FoliarModel::getLeafAngleDistributionFunctionVector() {
+@@ -44,176 +35,126 @@ const std::vector<double> & FoliarModel::getTransmTransfertFunctionVector() {
+    return _transmTransfertFunctionVector;
+ }
+ 
+-void FoliarModel::setFoliarClumpingA(	const unsigned int& indice,
+-						const double& value) {
+-	_parametersForFoliarModels[indice].clumpingA = value;
++void FoliarModel::setFoliarClumpingA(const double& value) {
++	_parametersForCurrentModel.clumpingA = value;
+ }
+-void FoliarModel::setFoliarClumpingB(	const unsigned int& indice,
+-						const double& value) {
+-	_parametersForFoliarModels[indice].clumpingB = value;
++void FoliarModel::setFoliarClumpingB(const double& value) {
++	_parametersForCurrentModel.clumpingB = value;
+ }
+ 
+-void FoliarModel::setFoliarOmegaMin(const unsigned int& indice,
+-						const double& value) {
+-	_parametersForFoliarModels[indice].omegaMin = value;
++void FoliarModel::setFoliarOmegaMin(const double& value) {
++	_parametersForCurrentModel.omegaMin = value;
+ }
+ 
+-void FoliarModel::setFoliarOmegaMax(const unsigned int& indice,
+-						const double& value) {
+-	_parametersForFoliarModels[indice].omegaMax = value;
++void FoliarModel::setFoliarOmegaMax(const double& value) {
++	_parametersForCurrentModel.omegaMax = value;
+ }
+ 
+-double FoliarModel::getFoliarClumpingA(const unsigned int& indice) {
+-	return _parametersForFoliarModels[indice].clumpingA;
++double FoliarModel::getFoliarClumpingA() {
++	return _parametersForCurrentModel.clumpingA;
+ }
+ 
+-double FoliarModel::getFoliarClumpingB(const unsigned int& indice) {
+-	return _parametersForFoliarModels[indice].clumpingB;
++double FoliarModel::getFoliarClumpingB() {
++	return _parametersForCurrentModel.clumpingB;
+ }
+ 
+-double FoliarModel::getFoliarOmegaMin(const unsigned int& indice) {
+-	return _parametersForFoliarModels[indice].omegaMin;
++double FoliarModel::getFoliarOmegaMin() {
++	return _parametersForCurrentModel.omegaMin;
+ }
+ 
+-double FoliarModel::getFoliarOmegaMax(const unsigned int& indice) {
+-	return _parametersForFoliarModels[indice].omegaMax;
++double FoliarModel::getFoliarOmegaMax() {
++	return _parametersForCurrentModel.omegaMax;
+ }
+ 
+-void FoliarModel::setFoliarDimension(	const unsigned int& indice,
+-						const double& value) {
+-	_parametersForFoliarModels[indice].foliarDimension = value;
++void FoliarModel::setFoliarDimension(const double& value) {
++	_parametersForCurrentModel.foliarDimension = value;
+ }
+ 
+-double FoliarModel::getFoliarDimension(const unsigned int& indice) {
+-	return _parametersForFoliarModels[indice].foliarDimension;
++double FoliarModel::getFoliarDimension() {
++	return _parametersForCurrentModel.foliarDimension;
+ }
+ 
+-double FoliarModel::getHotSpotFactor(const unsigned int& indice) const {
+-	return _parametersForFoliarModels[indice].hotSpotFactor;
++double FoliarModel::getHotSpotFactor() const {
++	return _parametersForCurrentModel.hotSpotFactor;
+ }
+ 
+-void FoliarModel::setHotSpotFactor(const unsigned int& indice,
+-					const double& value) {
+-	_parametersForFoliarModels[indice].hotSpotFactor = value;
++void FoliarModel::setHotSpotFactor(const double& value) {
++	_parametersForCurrentModel.hotSpotFactor = value;
+ }
+ 
+-void FoliarModel::setFoliarAverageLeafAngle(const unsigned int& indice,
+-								const double& value) {
+-	_parametersForFoliarModels[indice].averageLeafAngle = value;
++void FoliarModel::setFoliarAverageLeafAngle(const double& value) {
++	_parametersForCurrentModel.averageLeafAngle = value;
+ }
+ 
+-double FoliarModel::getFoliarAverageLeafAngle(const unsigned int& indice) {
+-	return _parametersForFoliarModels[indice].averageLeafAngle;
++double FoliarModel::getFoliarAverageLeafAngle() {
++	return _parametersForCurrentModel.averageLeafAngle;
+ }
+ 
+-void FoliarModel::setNumberOfAla(	const int& indice,
+-						const int& value) {
+-	_parametersForFoliarModels[indice].numberOfAla = value;
++void FoliarModel::setNumberOfAla(const int& value) {
++	_parametersForCurrentModel.numberOfAla = value;
+ }
+-int FoliarModel::getNumberOfAla(const int& indice) {
+-	return _parametersForFoliarModels[indice].numberOfAla;
++int FoliarModel::getNumberOfAla() {
++	return _parametersForCurrentModel.numberOfAla;
+ }
+-void FoliarModel::setNthAla(const int& indice,
+-					const int& value) {
+-	_parametersForFoliarModels[indice].nthAla = value;
++void FoliarModel::setNthAla(const int& value) {
++	_parametersForCurrentModel.nthAla = value;
+ }
+-int FoliarModel::getNthOfAla(const int& indice) {
+-	return _parametersForFoliarModels[indice].nthAla;
++int FoliarModel::getNthOfAla() {
++	return _parametersForCurrentModel.nthAla;
+ }
+ 
+-void FoliarModel::setFoliarEllipsePrincipalAngle(	const unsigned int& indice,
+-									const double& value) {
+-	_parametersForFoliarModels[indice].ellipsePrincipalAngle = value;
++void FoliarModel::setFoliarEllipsePrincipalAngle(const double& value) {
++	_parametersForCurrentModel.ellipsePrincipalAngle = value;
+ }
+-void FoliarModel::setFoliarEllipseEccentricity(	const unsigned int& indice,
+-									const double& value) {
+-	_parametersForFoliarModels[indice].ellipseEccentricity = value;
++void FoliarModel::setFoliarEllipseEccentricity(const double& value) {
++	_parametersForCurrentModel.ellipseEccentricity = value;
+ }
+ 
+-double FoliarModel::getFoliarEllipsePrincipalAngle(const unsigned int& indice) {
+-	return _parametersForFoliarModels[indice].ellipsePrincipalAngle;
++double FoliarModel::getFoliarEllipsePrincipalAngle() {
++	return _parametersForCurrentModel.ellipsePrincipalAngle;
+ }
+-double FoliarModel::getFoliarEllipseEccentricity(const unsigned int& indice) {
+-	return _parametersForFoliarModels[indice].ellipseEccentricity;
++double FoliarModel::getFoliarEllipseEccentricity() {
++	return _parametersForCurrentModel.ellipseEccentricity;
+ }
+-void FoliarModel::setFoliarTypeOfLeafAngleDistribution(	const unsigned int& indice,
+-								const int& value) {
+-	_parametersForFoliarModels[indice].typeOfLeafAngleDistribution = value;
++void FoliarModel::setFoliarTypeOfLeafAngleDistribution(const int& value) {
++	_parametersForCurrentModel.typeOfLeafAngleDistribution = value;
+ }
+ 
+-int FoliarModel::getFoliarTypeOfLeafAngleDistribution(const unsigned int& indice) {
+-	return _parametersForFoliarModels[indice].typeOfLeafAngleDistribution;
++int FoliarModel::getFoliarTypeOfLeafAngleDistribution() {
++	return _parametersForCurrentModel.typeOfLeafAngleDistribution;
+ }
+ 
+-void FoliarModel::setAdaxialReflectanceForFoliar(	const unsigned int& indice,
+-								const unsigned int& spectralBand,
++void FoliarModel::setAdaxialReflectanceForFoliar(	const unsigned int& spectralBand,
+                                const double & value) {
+-	_parametersForFoliarModels[indice].adaxialReflectanceVector[spectralBand] = value;
++	_parametersForCurrentModel.adaxialReflectanceVector[spectralBand] = value;
+ }
+ 
+-void FoliarModel::setAbaxialReflectanceForFoliar(	const unsigned int& indice,
+-								const unsigned int& spectralBand,
++void FoliarModel::setAbaxialReflectanceForFoliar(	const unsigned int& spectralBand,
+                                const double & value) {
+-	_parametersForFoliarModels[indice].abaxialReflectanceVector[spectralBand] = value;
+-}
+-
+-void FoliarModel::setAbaxialDiffuseTransmittanceAccelerationForFoliar(	const unsigned int& indice,
+-									const double & value) {
+-	_parametersForFoliarModels[indice].bottomDiffuseTransmittanceAccelerationFactor = value;
+-}
+-void FoliarModel::setAdaxialDiffuseTransmittanceAccelerationForFoliar(	const unsigned int& indice,
+-									const double & value) {
+-	_parametersForFoliarModels[indice].diffuseTransmittanceAccelerationFactor = value;
+-}
+-double FoliarModel::getAbaxialDiffuseTransmittanceAccelerationForFoliar(	const unsigned int& indice) const {
+-	return _parametersForFoliarModels[indice].bottomDiffuseTransmittanceAccelerationFactor;
+-}
+-double FoliarModel::getAdaxialDiffuseTransmittanceAccelerationForFoliar(	const unsigned int& indice) const {
+-	return _parametersForFoliarModels[indice].diffuseTransmittanceAccelerationFactor;
++	_parametersForCurrentModel.abaxialReflectanceVector[spectralBand] = value;
+ }
+ 
+-void FoliarModel::setLeafTransmittanceForFoliar(const unsigned int& indice,
+-								const unsigned int& spectralBand,
++void FoliarModel::setLeafTransmittanceForFoliar(	const unsigned int& spectralBand,
+                                const double & value,
+                                const bool & isBottomFace) {
+    if (isBottomFace) {
+-		_parametersForFoliarModels[indice].bottomLeafTransmittanceVector[spectralBand] = value;
+-	} else {
+-		_parametersForFoliarModels[indice].leafTransmittanceVector[spectralBand] = value;
+-	}
+-}
+-
+-double FoliarModel::getAdaxialReflectanceForFoliar(	const unsigned int& indice,
+-								const unsigned int& spectralBand) {
+-	return _parametersForFoliarModels[indice].adaxialReflectanceVector[spectralBand];
+-}
+-
+-double FoliarModel::getAbaxialReflectanceForFoliar(	const unsigned int& indice,
+-								const unsigned int& spectralBand) {
+-	return _parametersForFoliarModels[indice].abaxialReflectanceVector[spectralBand];
+-}
+-
+-double FoliarModel::getLeafTransmittanceForFoliar(	const unsigned int& indice,
+-								const unsigned int& spectralBand,
+-								const bool & isBottomFace) {
+-	if (isBottomFace) {
+-		return _parametersForFoliarModels[indice].bottomLeafTransmittanceVector[spectralBand];
++		_parametersForCurrentModel.bottomLeafTransmittanceVector[spectralBand] = value;
+    } else {
+-		return _parametersForFoliarModels[indice].leafTransmittanceVector[spectralBand];
++		_parametersForCurrentModel.leafTransmittanceVector[spectralBand] = value;
+    }
+ }
+ 
+-void FoliarModel::setEquivalentFrontLambertianIndex(const unsigned int foliarIndex, const unsigned int lambertianIndex) {
+-	_parametersForFoliarModels[foliarIndex].equivalentFrontLambertian = lambertianIndex;
++void FoliarModel::setEquivalentFrontLambertianIndex(const unsigned int lambertianIndex) {
++	_parametersForCurrentModel.equivalentFrontLambertian = lambertianIndex;
+ }
+-void FoliarModel::setEquivalentBackLambertianIndex(const unsigned int foliarIndex, const unsigned int lambertianIndex) {
+-	_parametersForFoliarModels[foliarIndex].equivalentBackLambertian = lambertianIndex;
++void FoliarModel::setEquivalentBackLambertianIndex(const unsigned int lambertianIndex) {
++	_parametersForCurrentModel.equivalentBackLambertian = lambertianIndex;
+ }
+ 
+-unsigned int FoliarModel::getEquivalentFrontLambertianIndex(const unsigned int foliarIndex) const {
+n-	return _parametersForFoliarModels[foliarIndex].equivalentFrontLambertian;
++unsigned int FoliarModel::getEquivalentFrontLambertianIndex() const {
++	return _parametersForCurrentModel.equivalentFrontLambertian;
+ }
+-unsigned int FoliarModel::getEquivalentBackLambertianIndex(const unsigned int foliarIndex) const {
+-	return _parametersForFoliarModels[foliarIndex].equivalentBackLambertian;
++unsigned int FoliarModel::getEquivalentBackLambertianIndex() const {
++	return _parametersForCurrentModel.equivalentBackLambertian;
+ }
+diff --git a/Phase/src/materials/VegetationMaterialWriter.cpp b/Phase/src/materials/VegetationMaterialWriter.cpp
+index 63ed61e..d0768b8 100644
+--- a/Phase/src/materials/VegetationMaterialWriter.cpp
++++ b/Phase/src/materials/VegetationMaterialWriter.cpp
+@@ -101,7 +101,8 @@ bool VegetationMaterialWriter::treat(	const phsdata::UnderstoryMulti & understor
+    // angle distribution into the single-slot LAD vectors (no other model's LAD
+    // data is stored). Must run before the getFoliarTypeOfLeafAngleDistribution()
+    // reads below (the ELLIPS/ALA==0 case rewrites the type to HORIZ).
+-	computeLadDataForModel(genDTO, ladComputation, foliarModel, understory, foliarIndice, modelIndex);
++	computeLadDataForModel(genDTO, ladComputation, foliarModel, understory, modelIndex);
++	fillFoliarModelMultiplicativeFactors(understory, foliarModel);
+ 
+    vector<FoliarProperty> foliarProperty;
+    foliarProperty.resize(genDTO.numberOfSpectralBands);
+@@ -122,8 +123,8 @@ bool VegetationMaterialWriter::treat(	const phsdata::UnderstoryMulti & understor
+    }
+ 
+    for (unsigned int spectralBandIndex = 0; spectralBandIndex < genDTO.numberOfSpectralBands; spectralBandIndex++) {
+-		foliarProperty[spectralBandIndex].typeOfLeafAngleDistribution = foliarModel.getFoliarTypeOfLeafAngleDistribution(foliarIndice);
+-		foliarProperty[spectralBandIndex].foliarDimension = foliarModel.getFoliarDimension(foliarIndice);
++		foliarProperty[spectralBandIndex].typeOfLeafAngleDistribution = foliarModel.getFoliarTypeOfLeafAngleDistribution();
++		foliarProperty[spectralBandIndex].foliarDimension = foliarModel.getFoliarDimension();
+    }
+    fTFoliar.casPDF = ladComputation.initialisationLadProbabilityDensityFunctions();
+    ostringstream val;
+@@ -134,7 +135,7 @@ bool VegetationMaterialWriter::treat(	const phsdata::UnderstoryMulti & understor
+ 
+    pkmg.setTypeFonctionDePhase(globalReferences::FOLIAIRE);
+    pkmg.setNumeroFonctionDePhase(modelIndex);
+-	outCoeffSpecProperties << pkmg.cleThermalHotSpotFactor() << foliarModel.getHotSpotFactor(foliarIndice) << endl;
++	outCoeffSpecProperties << pkmg.cleThermalHotSpotFactor() << foliarModel.getHotSpotFactor() << endl;
+    phase::FluorescenceResults topFluorescenceResults;
+    topFluorescenceResults.useBioClimaticProfileEta = false;
+    topFluorescenceResults.isFluorescent = false;
+@@ -214,22 +215,22 @@ bool VegetationMaterialWriter::treat(	const phsdata::UnderstoryMulti & understor
+    }
+ 
+    if (genDTO.generateEquivalentLambertianPhaseFunctionsFromVegetation) {
+-		foliarModel.setEquivalentFrontLambertianIndex(foliarIndice, PhaseProperty::getNewEquivalentLambertianModelIndex());
++		foliarModel.setEquivalentFrontLambertianIndex(PhaseProperty::getNewEquivalentLambertianModelIndex());
+        if (!hasDifferentBottom) {
+-			foliarModel.setEquivalentBackLambertianIndex(foliarIndice, foliarModel.getEquivalentFrontLambertianIndex(foliarIndice));
++			foliarModel.setEquivalentBackLambertianIndex(foliarModel.getEquivalentFrontLambertianIndex());
+        } else {
+-			foliarModel.setEquivalentBackLambertianIndex(foliarIndice, PhaseProperty::getNewEquivalentLambertianModelIndex());
++			foliarModel.setEquivalentBackLambertianIndex(PhaseProperty::getNewEquivalentLambertianModelIndex());
+        }
+ 
+        pkmg.setTypeFonctionDePhase(globalReferences::FOLIAIRE);
+        pkmg.setNumeroFonctionDePhase(modelIndex);
+-		outCoeffSpecProperties << pkmg.cleEquivalentFrontLambertianIndex() << (foliarModel.getEquivalentFrontLambertianIndex(foliarIndice)) << endl;
+-		outCoeffSpecProperties << pkmg.cleEquivalentBackLambertianIndex() << (foliarModel.getEquivalentBackLambertianIndex(foliarIndice)) << endl;
++		outCoeffSpecProperties << pkmg.cleEquivalentFrontLambertianIndex() << (foliarModel.getEquivalentFrontLambertianIndex()) << endl;
++		outCoeffSpecProperties << pkmg.cleEquivalentBackLambertianIndex() << (foliarModel.getEquivalentBackLambertianIndex()) << endl;
+        pkmg.setTypeFonctionDePhase(globalReferences::LAMBERTIEN);
+-		pkmg.setNumeroFonctionDePhase(foliarModel.getEquivalentFrontLambertianIndex(foliarIndice));
++		pkmg.setNumeroFonctionDePhase(foliarModel.getEquivalentFrontLambertianIndex());
+        _fluorescenceService.writeSimulationProperties(topFluorescenceResults, pkmg, outCoeffSpecProperties);
+-		if (foliarModel.getEquivalentBackLambertianIndex(foliarIndice) != foliarModel.getEquivalentFrontLambertianIndex(foliarIndice)) {
+-			pkmg.setNumeroFonctionDePhase(foliarModel.getEquivalentBackLambertianIndex(foliarIndice));
++		if (foliarModel.getEquivalentBackLambertianIndex() != foliarModel.getEquivalentFrontLambertianIndex()) {
++			pkmg.setNumeroFonctionDePhase(foliarModel.getEquivalentBackLambertianIndex());
+            _fluorescenceService.writeSimulationProperties(bottomFluorescenceResults, pkmg, outCoeffSpecProperties);
+        }
+    }
+@@ -245,7 +246,7 @@ bool VegetationMaterialWriter::treat(	const phsdata::UnderstoryMulti & understor
+    PointsListsNCIntegration<DirectionCartesienne> pointsListSpec;
+    PointsListsNCIntegration<DirectionCartesienne> pointsListDiff;
+    foliarComputer.computeFRFoliarSpecularForModelIndex(pointsListSpec, pointsListDiff, listDirections, fTFoliar, foliarIndice, foliarProperty[0]);
+-	foliarComputer.computeClumpingIndex(listDirections, genDTO.solarDirection, foliarIndice);
++	foliarComputer.computeClumpingIndex(listDirections, genDTO.solarDirection);
+    foliarComputer.runComputeFoliarPerThread(foliarProperty, foliarIndice, fTFoliar, foliarPropertyParameters, listDirections, *_sphereMap,
+        pointsListSpec, pointsListDiff);
+    foliarComputer.computeFoliarHotSpotDirectionalFactor(foliarIndice, listDirections, fTFoliar.iterationStepPhi, fTFoliar.iterationStepTheta);
+@@ -262,10 +263,10 @@ bool VegetationMaterialWriter::treat(	const phsdata::UnderstoryMulti & understor
+        genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRootScatObj.str() + "type", "homogeneous_vegetation");
+    }
+    genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRootScatObj.str() + "opIndex", std::to_string(modelIndex));
+-	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRootScatObj.str() + "leafdimension", std::to_string(foliarModel.getFoliarDimension(foliarIndice)));
+-	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRootScatObj.str() + "LAD", std::to_string(foliarModel.getFoliarTypeOfLeafAngleDistribution(foliarIndice)));
+-	if (foliarModel.getFoliarTypeOfLeafAngleDistribution(foliarIndice) == globalReferences::ELLIPS)
+-		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRootScatObj.str() + "ala", std::to_string(foliarModel.getFoliarAverageLeafAngle(foliarIndice)));
++	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRootScatObj.str() + "leafdimension", std::to_string(foliarModel.getFoliarDimension()));
++	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRootScatObj.str() + "LAD", std::to_string(foliarModel.getFoliarTypeOfLeafAngleDistribution()));
++	if (foliarModel.getFoliarTypeOfLeafAngleDistribution() == globalReferences::ELLIPS)
++		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRootScatObj.str() + "ala", std::to_string(foliarModel.getFoliarAverageLeafAngle()));
+ 
+    foliarComputer.writeTransmittance(fTFoliar, listDirections, genDTO.radiativeTransferMethod, 2, foliarProperty[0].specularFoliarData._isSpecular,
+        pathPhaseTransm, pathPhaseDiff, pathPhaseSpec, pathPhaseHotSpotFactor, pathPhaseFluorescence);
+@@ -343,8 +344,8 @@ bool VegetationMaterialWriter::treat(	const phsdata::UnderstoryMulti & understor
+    if (genDTO.generateEquivalentLambertianPhaseFunctionsFromVegetation) {
+        const phase::LambertianMaterialWriter lambertianMaterialWriter(_fluorescenceService, _opticalFactorsWriter);
+ 
+-		const unsigned int frontEquivalentLambertianIndex = foliarModel.getEquivalentFrontLambertianIndex(foliarIndice);
+-		const unsigned int backEquivalentLambertianIndex = foliarModel.getEquivalentBackLambertianIndex(foliarIndice);
++		const unsigned int frontEquivalentLambertianIndex = foliarModel.getEquivalentFrontLambertianIndex();
++		const unsigned int backEquivalentLambertianIndex = foliarModel.getEquivalentBackLambertianIndex();
+ 
+        lambertianMaterialWriter.writeLuxCoreMaterial(genDTO, frontEquivalentLambertianIndex, frontEquivalentLambertianIndex,
+                frontEquivalentLambertianProperties, topFluorescenceResults);
+-- 
+2.47.3
+

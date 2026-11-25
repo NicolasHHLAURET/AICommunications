@@ -1,0 +1,100 @@
+-void FoliarModel::setFoliarTypeOfLeafAngleDistribution(	const unsigned int& indice,
+-								const int& value) {
+-	_parametersForFoliarModels[indice].typeOfLeafAngleDistribution = value;
++void FoliarModel::setFoliarTypeOfLeafAngleDistribution(const int& value) {
++	_parametersForCurrentModel.typeOfLeafAngleDistribution = value;
+ }
+ 
+-int FoliarModel::getFoliarTypeOfLeafAngleDistribution(const unsigned int& indice) {
+-	return _parametersForFoliarModels[indice].typeOfLeafAngleDistribution;
++int FoliarModel::getFoliarTypeOfLeafAngleDistribution() {
++	return _parametersForCurrentModel.typeOfLeafAngleDistribution;
+ }
+ 
+-void FoliarModel::setAdaxialReflectanceForFoliar(	const unsigned int& indice,
+-								const unsigned int& spectralBand,
++void FoliarModel::setAdaxialReflectanceForFoliar(	const unsigned int& spectralBand,
+                                const double & value) {
+-	_parametersForFoliarModels[indice].adaxialReflectanceVector[spectralBand] = value;
++	_parametersForCurrentModel.adaxialReflectanceVector[spectralBand] = value;
+ }
+ 
+-void FoliarModel::setAbaxialReflectanceForFoliar(	const unsigned int& indice,
+-								const unsigned int& spectralBand,
++void FoliarModel::setAbaxialReflectanceForFoliar(	const unsigned int& spectralBand,
+                                const double & value) {
+-	_parametersForFoliarModels[indice].abaxialReflectanceVector[spectralBand] = value;
+-}
+-
+-void FoliarModel::setAbaxialDiffuseTransmittanceAccelerationForFoliar(	const unsigned int& indice,
+-									const double & value) {
+-	_parametersForFoliarModels[indice].bottomDiffuseTransmittanceAccelerationFactor = value;
+-}
+-void FoliarModel::setAdaxialDiffuseTransmittanceAccelerationForFoliar(	const unsigned int& indice,
+-									const double & value) {
+-	_parametersForFoliarModels[indice].diffuseTransmittanceAccelerationFactor = value;
+-}
+-double FoliarModel::getAbaxialDiffuseTransmittanceAccelerationForFoliar(	const unsigned int& indice) const {
+-	return _parametersForFoliarModels[indice].bottomDiffuseTransmittanceAccelerationFactor;
+-}
+-double FoliarModel::getAdaxialDiffuseTransmittanceAccelerationForFoliar(	const unsigned int& indice) const {
+-	return _parametersForFoliarModels[indice].diffuseTransmittanceAccelerationFactor;
++	_parametersForCurrentModel.abaxialReflectanceVector[spectralBand] = value;
+ }
+ 
+-void FoliarModel::setLeafTransmittanceForFoliar(const unsigned int& indice,
+-								const unsigned int& spectralBand,
++void FoliarModel::setLeafTransmittanceForFoliar(	const unsigned int& spectralBand,
+                                const double & value,
+                                const bool & isBottomFace) {
+    if (isBottomFace) {
+-		_parametersForFoliarModels[indice].bottomLeafTransmittanceVector[spectralBand] = value;
+-	} else {
+-		_parametersForFoliarModels[indice].leafTransmittanceVector[spectralBand] = value;
+-	}
+-}
+-
+-double FoliarModel::getAdaxialReflectanceForFoliar(	const unsigned int& indice,
+-								const unsigned int& spectralBand) {
+-	return _parametersForFoliarModels[indice].adaxialReflectanceVector[spectralBand];
+-}
+-
+-double FoliarModel::getAbaxialReflectanceForFoliar(	const unsigned int& indice,
+-								const unsigned int& spectralBand) {
+-	return _parametersForFoliarModels[indice].abaxialReflectanceVector[spectralBand];
+-}
+-
+-double FoliarModel::getLeafTransmittanceForFoliar(	const unsigned int& indice,
+-								const unsigned int& spectralBand,
+-								const bool & isBottomFace) {
+-	if (isBottomFace) {
+-		return _parametersForFoliarModels[indice].bottomLeafTransmittanceVector[spectralBand];
++		_parametersForCurrentModel.bottomLeafTransmittanceVector[spectralBand] = value;
+    } else {
+-		return _parametersForFoliarModels[indice].leafTransmittanceVector[spectralBand];
++		_parametersForCurrentModel.leafTransmittanceVector[spectralBand] = value;
+    }
+ }
+ 
+-void FoliarModel::setEquivalentFrontLambertianIndex(const unsigned int foliarIndex, const unsigned int lambertianIndex) {
+-	_parametersForFoliarModels[foliarIndex].equivalentFrontLambertian = lambertianIndex;
++void FoliarModel::setEquivalentFrontLambertianIndex(const unsigned int lambertianIndex) {
++	_parametersForCurrentModel.equivalentFrontLambertian = lambertianIndex;
+ }
+-void FoliarModel::setEquivalentBackLambertianIndex(const unsigned int foliarIndex, const unsigned int lambertianIndex) {
+-	_parametersForFoliarModels[foliarIndex].equivalentBackLambertian = lambertianIndex;
++void FoliarModel::setEquivalentBackLambertianIndex(const unsigned int lambertianIndex) {
++	_parametersForCurrentModel.equivalentBackLambertian = lambertianIndex;
+ }
+ 
+-unsigned int FoliarModel::getEquivalentFrontLambertianIndex(const unsigned int foliarIndex) const {
+n-	return _parametersForFoliarModels[foliarIndex].equivalentFrontLambertian;
++unsigned int FoliarModel::getEquivalentFrontLambertianIndex() const {
++	return _parametersForCurrentModel.equivalentFrontLambertian;
+ }
+-unsigned int FoliarModel::getEquivalentBackLambertianIndex(const unsigned int foliarIndex) const {
+-	return _parametersForFoliarModels[foliarIndex].equivalentBackLambertian;
++unsigned int FoliarModel::getEquivalentBackLambertianIndex() const {
++	return _parametersForCurrentModel.equivalentBackLambertian;
+ }
+diff --git a/Phase/src/materials/VegetationMaterialWriter.cpp b/Phase/src/materials/VegetationMaterialWriter.cpp

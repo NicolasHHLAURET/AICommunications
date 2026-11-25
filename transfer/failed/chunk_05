@@ -1,0 +1,100 @@
+        else
+-			foliarModel.setAdaxialReflectanceForFoliar(modelPosition, sbi, umf->reflectanceFactor);
+-		foliarModel.setLeafTransmittanceForFoliar(modelPosition, sbi, umf->leafTransmittanceFactor, isBottomFace);
++			foliarModel.setAdaxialReflectanceForFoliar(sbi, umf->reflectanceFactor);
++		foliarModel.setLeafTransmittanceForFoliar(sbi, umf->leafTransmittanceFactor, isBottomFace);
+    }
+ }
+ 
+-void fillFoliarModelMultiplicativeFactors(const PhaseGeneralParametersDTO & genDTO, FoliarModel & foliarModel) {
++void fillFoliarModelMultiplicativeFactors(const phsdata::UnderstoryMulti & understory, FoliarModel & foliarModel) {
+    const unsigned int numberOfBands = PhaseProperty::getNumberOfSpectralBands();
+-	for (unsigned int modelPosition = 0; modelPosition < genDTO._volumesMaterials.understoryMultiFunctions.size(); ++modelPosition) {
+-		const phsdata::UnderstoryMulti & understory = *genDTO._volumesMaterials.understoryMultiFunctions[modelPosition];
+-		const phsdata::UnderstoryModel * topModel = understory.getTopModel();
+-		const phsdata::UnderstoryModel * bottomModel = understory.getBottomModel();
+-		if (bottomModel == nullptr)
+-			bottomModel = topModel;
+-		fillFoliarModelFaceMultiplicativeFactors(foliarModel, modelPosition, topModel, false, numberOfBands);
+-		fillFoliarModelFaceMultiplicativeFactors(foliarModel, modelPosition, bottomModel, true, numberOfBands);
+-	}
++	const phsdata::UnderstoryModel * topModel = understory.getTopModel();
++	const phsdata::UnderstoryModel * bottomModel = understory.getBottomModel();
++	if (bottomModel == nullptr)
++		bottomModel = topModel;
++	fillFoliarModelFaceMultiplicativeFactors(foliarModel, topModel, false, numberOfBands);
++	fillFoliarModelFaceMultiplicativeFactors(foliarModel, bottomModel, true, numberOfBands);
+ }
+ 
+ /**
+  * (Re)initialises the shared foliar objects for one direction set and runs the
+  * direction-set-dependent precomputing. Called by VegetationMaterialWriter
+- * whenever the direction set changes between models (the per-model data filled
+- * by fillFoliarModelMultiplicativeFactors is reset by initFoliarModel, so it is
+- * redone here as well; the per-model LAD is computed later in treat(), per
+- * model).
++ * whenever the direction set changes between models (the per-model data is
++ * reset by initFoliarModel, so it is recomputed in treat(), per model).
+  */
+ void prepareVegetationDirectionSet(PhaseGeneralParametersDTO & genDTO, VegetationVolumeMaterials & vegetation, const unsigned int directionSetIndex) {
+    const unsigned int numberOfFoliarModels = genDTO._volumesMaterials.understoryMultiFunctions.size();
+    const vector<DirectionCartesienne> & listDirections = genDTO._directionSet[directionSetIndex]._directions;
+    const unsigned int numberOfDirections = listDirections.size();
+ 
+-	vegetation.foliarModel->initFoliarModel(numberOfFoliarModels, PhaseProperty::_numberOfSpectralBands,
++	vegetation.foliarModel->initFoliarModel(PhaseProperty::_numberOfSpectralBands,
+            numberOfDirections);
+ 
+    vegetation.foliarComputation->initFoliarComputation(numberOfDirections,
+@@ -99,7 +94,6 @@ void prepareVegetationDirectionSet(PhaseGeneralParametersDTO & genDTO, Vegetatio
+     PhaseProperty::resizePhaseParametersVectors();
+ 
+    readMultiplicativeFactor(genDTO);
+-	fillFoliarModelMultiplicativeFactors(genDTO, *vegetation.foliarModel);
+     printNumberOfFoliarModels();
+ 
+     int iterationStepPhi = genDTO._volumesMaterials.integrationStepOnPhi;
+diff --git a/Phase/src/foliar/FoliarComputation.cpp b/Phase/src/foliar/FoliarComputation.cpp
+index debca92..106a04b 100644
+--- a/Phase/src/foliar/FoliarComputation.cpp
++++ b/Phase/src/foliar/FoliarComputation.cpp
+@@ -48,11 +48,9 @@ void FoliarComputation::initFoliarComputation(	const unsigned int & numberOfDire
+    }
+ 
+    // New precomputation
+-	_preDiffuseTransfertFunctionVector.resize(numberOfFoliarModels, std::vector<std::vector<std::vector<double> > >(4));
+-	for (unsigned int q = 0; q < numberOfFoliarModels; q++) {
+-		for (unsigned int i = 0; i < 4; i++) {
+-			_preDiffuseTransfertFunctionVector[q][i].resize(_numberOfDirections, std::vector<double>(_numberOfDirections));
+-		}
++	_preDiffuseTransfertFunctionVector.resize(4);
++	for (unsigned int i = 0; i < 4; i++) {
++		_preDiffuseTransfertFunctionVector[i].resize(_numberOfDirections, std::vector<double>(_numberOfDirections));
+    }
+ }
+ 
+@@ -146,23 +144,20 @@ void FoliarComputation::computeFoliarPerBand(	FoliarProperty & foliarProperty,
+    _albedoVector[spectralBandIndex] = 0;
+    _albedoSpecVector[spectralBandIndex] = 0;
+ 
+-	foliarProperty.diffuseTransmittanceAccelerationFactor = _parametersForFoliarModels[modelIndex].diffuseTransmittanceAccelerationFactor;
+-	foliarProperty.bottomDiffuseTransmittanceAccelerationFactor = _parametersForFoliarModels[modelIndex].bottomDiffuseTransmittanceAccelerationFactor;
+-
+-	foliarProperty.typeOfLeafAngleDistribution = _parametersForFoliarModels[modelIndex].typeOfLeafAngleDistribution;
+-	foliarProperty.foliarDimension = _parametersForFoliarModels[modelIndex].foliarDimension;
++	foliarProperty.typeOfLeafAngleDistribution = _parametersForCurrentModel.typeOfLeafAngleDistribution;
++	foliarProperty.foliarDimension = _parametersForCurrentModel.foliarDimension;
+ 
+    foliarProperty.reflectanceTop = 0.01 * foliarDatabaseParameters->getTopReflectanceForBand(spectralBandIndex)
+-			* _parametersForFoliarModels[modelIndex].adaxialReflectanceVector[spectralBandIndex];
++			* _parametersForCurrentModel.adaxialReflectanceVector[spectralBandIndex];
+ 
+    foliarProperty.reflectanceBottom = 0.01 * foliarDatabaseParameters->getBottomReflectanceForBand(spectralBandIndex)
+-			* _parametersForFoliarModels[modelIndex].abaxialReflectanceVector[spectralBandIndex];
++			* _parametersForCurrentModel.abaxialReflectanceVector[spectralBandIndex];
+ 
+    foliarProperty.transmittance = 0.01 * foliarDatabaseParameters->getTransmittanceForBand(spectralBandIndex)
+-			* _parametersForFoliarModels[modelIndex].leafTransmittanceVector[spectralBandIndex];
++			* _parametersForCurrentModel.leafTransmittanceVector[spectralBandIndex];
+ 
+    foliarProperty.bottomTransmittance = 0.01 * foliarDatabaseParameters->getBottomTransmittanceForBand(spectralBandIndex)
