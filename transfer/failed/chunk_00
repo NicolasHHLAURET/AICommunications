@@ -1,100 +1,199 @@
-From ece1588229dc5b756f90ef9d105b67354420ae5d Mon Sep 17 00:00:00 2001
+From e1bde4601cc23aa5c9a0db46425214bd240f37ee Mon Sep 17 00:00:00 2001
 From: Vibe <vibe@localhost>
-Date: Tue, 24 Nov 2026 16:13:22 +0000
-Subject: [PATCH] Foliar C-structure cleanup: single-slot per-model storage in
- FoliarModel/FoliarComputation; CONTEXT.md item 23
+Date: Wed, 25 Nov 2026 12:51:26 +0000
+Subject: [PATCH] Delete VegetationVolumeMaterials struct; foliar objects
+ become processAll() locals passed by ref; CONTEXT.md item 25
 
-- FoliarModel: vector<ParametersForFoliarModels> collapsed to one
-  FoliarModelParameters slot for the current model; all setters/getters lost
-  their model-index parameter; dead fields removed (hasDifferentModelForBottom,
-  typeDiffPhase, tMinLeaf/tMaxLeaf/standardDeviationVector,
-  diffuseTransmittanceAccelerationFactor/bottom...); dead
-  _hotSpotFactorDistributionFunctionVector + unused getters removed;
-  initFoliarModel(numberOfSpectralBands, numberOfDirections)
-- FoliarComputation: _preDiffuseTransfertFunctionVector lost its [modelIndex]
-  level (single slot), references the single params slot; computeClumpingIndex
-  lost its now-unused modelIndex parameter; removed the write-only
-  foliarProperty diffuseTransmittanceAccelerationFactor copies (fields deleted
-  from FoliarProperty)
-- Per-model data computed only when the model is treated:
-  fillFoliarModelMultiplicativeFactors(understory, foliarModel) moved from
-  prepareVegetationDirectionSet to VegetationMaterialWriter::treat() next to
-  computeLadDataForModel (which lost its foliarModelIndice param)
-- This removes the last indexFunction-vs-position mixup (computeFoliarPerBand
-  read the params at getModelIndex()=indexFunction while setters used the loop
-  position)
-- Dead free resizePhaseParametersVectors declaration removed (Phase.hpp)
-- CONTEXT.md: TODO item 17->16 reference fix (a45629a), history item 23
+- struct + processVegetationVolumeMaterials() removed (Phase.hpp/PhaseVegetation.cpp);
+  testIfUseSun moved into VegetationMaterialWriter.cpp
+- processAll(genDTO, pkmg, out) declares FoliarModel/FoliarComputation/LADComputation
+  (reference-bound to foliarModel, declared first)/FTFoliar/useSpectralIrradiance
+  as locals; treat() and prepareVegetationDirectionSet() take individual refs
+- dead pointsListSpec/pointsListDiff members dropped with the struct
+- Phase.cpp call site: vegetationWriter.processAll(genDTO, pkmg, outCoeffSpecProperties)
 ---
- CONTEXT.md                                    |  38 +++-
- Phase/include/Phase.hpp                       |  11 +-
- Phase/include/PhaseStructure.hpp              |   2 -
- Phase/include/foliar/FoliarComputation.hpp    |  11 +-
- Phase/include/foliar/FoliarModel.hpp          | 124 +++-------
- Phase/src/Phase.cpp                           |  44 ++--
- Phase/src/PhaseVegetation.cpp                 |  34 ++-
- Phase/src/foliar/FoliarComputation.cpp        |  72 +++---
- Phase/src/foliar/FoliarModel.cpp              | 211 +++++++-----------
- .../materials/VegetationMaterialWriter.cpp    |  39 ++--
- 10 files changed, 236 insertions(+), 350 deletions(-)
+ CONTEXT.md                                    | 15 ++++++++
+ Phase/include/Phase.hpp                       | 17 +++----
+ .../materials/VegetationMaterialWriter.hpp    | 14 ++++--
+ Phase/src/Phase.cpp                           |  3 +-
+ Phase/src/PhaseVegetation.cpp                 | 47 +++++--------------
+ .../materials/VegetationMaterialWriter.cpp    | 44 +++++++++++++----
+ 6 files changed, 80 insertions(+), 60 deletions(-)
 
 diff --git a/CONTEXT.md b/CONTEXT.md
-index 8f25a8b..33f45a7 100644
+index 80c46a8..dd9574e 100644
 --- a/CONTEXT.md
 +++ b/CONTEXT.md
-@@ -260,6 +260,30 @@ Sandbox notes for rebuilding the prefix (no root available):
-     top model when hasDifferentModelForBottom=0. v6 node/attr names:
-     UnderstoryNodeMultiplicativeFactorForLUT /
-     UnderstoryMultiplicativeFactorForLUT / leafTransmittanceFactor.
-+23. Foliar C-structure cleanup (this session): FoliarModel now stores ONE
-+    FoliarModelParameters slot for the current model (the LAD/g-function
-+    vectors were already single-slot since item 16); all setters/getters lost
-+    their model-index parameter. Per-model data is computed only when the
-+    model is treated: computeLadDataForModel() and the new per-model
-+    fillFoliarModelMultiplicativeFactors(understory, foliarModel) are both
-+    called from VegetationMaterialWriter::treat() (the fill moved out of
-+    prepareVegetationDirectionSet, which no longer loops the models).
-+    FoliarComputation's _preDiffuseTransfertFunctionVector lost its
-+    [modelIndex] level (single slot [4][dir][dir]) and now references the
-+    single FoliarModelParameters slot. This removes the last
-+    indexFunction-vs-position mixup: computeFoliarPerBand used to read
-+    _parametersForFoliarModels[foliarPropertyParameters.getModelIndex()]
-+    (= XML indexFunction) while the setters wrote at the loop position --
-+    latent out-of-bounds when indexFunction != position (e.g. template
-+    default -1). Removed dead code: struct fields hasDifferentModelForBottom,
-+    typeDiffPhase, tMinLeaf/tMaxLeaf/standardDeviationVector,
-+    diffuseTransmittanceAccelerationFactor/bottom... (v6 dropped the XML
-+    attribute in item 22; the FoliarProperty fields were write-only), the
-+    _hotSpotFactorDistributionFunctionVector member + accessors, the unused
-+    reflectance/transmittance/acceleration getters, and the dead free
-+    resizePhaseParametersVectors declaration (old Phase.hpp:165).
-+    initFoliarModel(numberOfSpectralBands, numberOfDirections) only resets
-+    the common (direction-set) vectors and the single slot now.
+@@ -293,6 +293,21 @@ Sandbox notes for rebuilding the prefix (no root available):
+     documented for trees that differ only by whitespace (item 14/23
+     precedent -- the authoritative tree-hash gate then reports a different
+     hash, e.g. 608ca5ff vs 0e9bfb0a for item 23).
++25. VegetationVolumeMaterials struct deleted (this session): it only provided
++    lifetime grouping -- FoliarComputation/LADComputation hold references into
++    FoliarModel, so the three must be co-owned with foliarModel destroyed last.
++    processVegetationVolumeMaterials() was useless (only allocated the objects +
++    testIfUseSun); its content moved into VegetationMaterialWriter::processAll(),
++    which now declares the foliar objects as locals (FoliarModel foliarModel;
++    FoliarComputation foliarComputation(foliarModel); LADComputation
++    ladComputation(foliarModel); FTFoliar fTFoliar; useSpectralIrradiance...).
++    They CANNOT be locals of treat(): treat() runs per model while
++    prepareVegetationDirectionSet() (called from processAll on direction-set
++    change) initializes the shared per-direction-set state they reuse. The dead
++    pointsListSpec/pointsListDiff members went away with the struct (treat()
++    already had its own locals). processAll/treat/prepareVegetationDirectionSet
++    now take the individual refs instead of the struct; the Phase.cpp call site
++    is just vegetationWriter.processAll(genDTO, pkmg, outCoeffSpecProperties).
  
  ## Known TODOs / open points (next sessions)
  
-@@ -304,14 +328,12 @@ Sandbox notes for rebuilding the prefix (no root available):
- - librairieDart files NOT in dart_core yet (libIlwis, MakInversionParser,
-   netcdf, yaml, lut/inversion databases, JobWriter): add when a module
-   needs them. MakInversionParser still uses TinyXML (needs port to pugixml).
--- FOLIAR C-STRUCTURE CLEANUP: continue cleaning the old C Foliar storage
--  (FoliarModel / FoliarComputation / LADComputation): separate
--  common-to-all-models data from per-model data (single-slot LAD vectors
--  already done, history item 17), compute/allocate per-model data only when
--  the model is treated, and drop it afterwards. Diagnostic (item 17): no
--  cross-model access exists, except one unintended case where the XML
--  indexFunction was used for data access instead of the loop position --
--  fixed by the foliarIndice/outputModelIndex split.
-+- FOLIAR C-STRUCTURE CLEANUP: DONE (item 23). Single-slot per-model storage
-+  in FoliarModel/FoliarComputation; per-model data computed in treat() only.
-+  (Reference note: the single-slot LAD vectors were item 16, commit a45629a;
-+  item 17 is the patch-transfer incident of that delivery.) Possible later
-+  iterations: equivalentFront/BackLambertian live in the slot although they
-+  are only used within treat() -- could become writer locals.
- - REFACTOR INTO MaterialWriter CLASSES (same pattern as the Lambertian / Hapke
-   / RPV writers): treatSpecular (Phase.cpp:1031), treatPhaseExtern
-   (Phase.cpp:1356), treatMixedMaterial (Phase.cpp:1423).
 diff --git a/Phase/include/Phase.hpp b/Phase/include/Phase.hpp
-index 5cca052..00ee0bb 100644
+index 00ee0bb..1a3b422 100644
 --- a/Phase/include/Phase.hpp
 +++ b/Phase/include/Phase.hpp
+@@ -374,16 +374,6 @@ void treatMixedMaterial(PhaseGeneralParametersDTO & genDTO,	unsigned int opIndex
+ std::string getMaterialName(unsigned int modelType, unsigned int modelIndex);
+ 
+ /* Foliar */
+-struct VegetationVolumeMaterials {
+-	std::unique_ptr<FoliarModel> foliarModel;
+-	std::unique_ptr<FoliarComputation> foliarComputation;
+-	std::unique_ptr<LADComputation> ladComputation;
+-	FTFoliar fTFoliar;
+-	PointsListsNCIntegration<DirectionCartesienne> pointsListSpec;
+-	PointsListsNCIntegration<DirectionCartesienne> pointsListDiff;
+-	std::vector<bool> useSpectralIrradianceForReflectance;
+-};
+-VegetationVolumeMaterials processVegetationVolumeMaterials(PhaseGeneralParametersDTO & genDTO);
+ double numberOfAngularSectors(	const vector<DirectionCartesienne> & listDirections,
+                double & solidAnglesSum);
+ void printNumberOfFoliarModels();
+@@ -401,7 +391,12 @@ void computeLadDataForModel(const PhaseGeneralParametersDTO & genDTO,
+                const unsigned int & outputModelIndex);
+ 
+ unsigned int getUnderstoryDirectionSetIndex(const PhaseGeneralParametersDTO & genDTO, const unsigned int modelPosition);
+-void prepareVegetationDirectionSet(PhaseGeneralParametersDTO & genDTO, VegetationVolumeMaterials & vegetation, const unsigned int directionSetIndex);
++void prepareVegetationDirectionSet(PhaseGeneralParametersDTO & genDTO,
++				FoliarModel & foliarModel,
++				FoliarComputation & foliarComputation,
++				LADComputation & ladComputation,
++				FTFoliar & fTFoliar,
++				const unsigned int directionSetIndex);
+ OpticalPropertyParameters buildFoliarOpticalPropertyParameters(const phsdata::UnderstoryMulti & understory, const unsigned int numberOfBands);
+ 
+ void readBioClimaticFile( 	string bcFilePath,
+diff --git a/Phase/include/materials/VegetationMaterialWriter.hpp b/Phase/include/materials/VegetationMaterialWriter.hpp
+index 8569bb1..a4dbfae 100644
+--- a/Phase/include/materials/VegetationMaterialWriter.hpp
++++ b/Phase/include/materials/VegetationMaterialWriter.hpp
+@@ -21,7 +21,9 @@
+ #include "fluorescence/FluorescenceMatrices.hpp"
+ #include "opticalfactors/OpticalFactorsTextureWriter.hpp"
+ 
+-struct VegetationVolumeMaterials;
++class FoliarModel;
++class FoliarComputation;
++class LADComputation;
+ 
+ namespace phase {
+ 
+@@ -34,8 +36,10 @@ public:
+    // DirectionSetLink (original order kept within a group; the output model
+    // index is UnderstoryMulti::indexFunction). Calls
+    // prepareVegetationDirectionSet() only when the direction set changes.
++	// The foliar objects are locals of this method: FoliarComputation and
++	// LADComputation hold references into FoliarModel, so foliarModel must be
++	// declared first (destroyed last).
+    void processAll(	PhaseGeneralParametersDTO & genDTO,
+-				VegetationVolumeMaterials & vegetation,
+                PhaseKeyMappingGenerator & pkmg,
+                std::ofstream & outCoeffSpecProperties);
+ 
+@@ -47,7 +51,11 @@ private:
+    bool treat(	const phsdata::UnderstoryMulti & understory,
+            unsigned int foliarIndice,
+            PhaseGeneralParametersDTO & genDTO,
+-			VegetationVolumeMaterials & vegetation,
++			FoliarModel & foliarModel,
++			FoliarComputation & foliarComputation,
++			LADComputation & ladComputation,
++			FTFoliar & fTFoliar,
++			const std::vector<bool> & useSpectralIrradianceForReflectance,
+            const std::vector<DirectionCartesienne> & listDirections,
+            PhaseKeyMappingGenerator & pkmg,
+            std::ofstream & outCoeffSpecProperties);
+diff --git a/Phase/src/Phase.cpp b/Phase/src/Phase.cpp
+index 5f2fd27..d07f8a2 100755
+--- a/Phase/src/Phase.cpp
++++ b/Phase/src/Phase.cpp
+@@ -2207,8 +2207,7 @@ void execute_batchPhase(PhaseGeneralParametersDTO & genDTO,
+    phase::FluorescenceService vegetationFluorescenceService;
+    phase::OpticalFactorsTextureWriter vegetationOpticalFactorsWriter;
+    phase::VegetationMaterialWriter vegetationWriter(vegetationFluorescenceService, vegetationOpticalFactorsWriter);
+-	VegetationVolumeMaterials vegetationMaterials = processVegetationVolumeMaterials(genDTO);
+-	vegetationWriter.processAll(genDTO, vegetationMaterials, pkmg, outCoeffSpecProperties);
++	vegetationWriter.processAll(genDTO, pkmg, outCoeffSpecProperties);
+    writePhasePropertiesSpectralIrradiance(outCoeffSpecProperties, pkmg, genDTO);
+ 
+ //	// Lecture des bases de donnees
+diff --git a/Phase/src/PhaseVegetation.cpp b/Phase/src/PhaseVegetation.cpp
+index f81a18a..9622a7c 100644
+--- a/Phase/src/PhaseVegetation.cpp
++++ b/Phase/src/PhaseVegetation.cpp
+@@ -7,20 +7,6 @@
+ 
+ #include "Phase.hpp"
+ 
+-/**
+- * Decides, for each spectral band, whether the reflectance values must be
+- * weighted by the sun spectral irradiance: only the bands located in the
+- * reflective (non thermal-only) domain use the sun irradiance.
+- */
+-static void testIfUseSun(const PhaseGeneralParametersDTO & genDTO,
+-		std::vector<bool> & useSpectralIrradianceForReflectance) {
+-	useSpectralIrradianceForReflectance.assign(genDTO.numberOfSpectralBands, false);
+-	for (unsigned int bandIndex = 0; bandIndex < genDTO.numberOfSpectralBands; ++bandIndex) {
+-		useSpectralIrradianceForReflectance[bandIndex] =
+-				(genDTO.spectralDomain[bandIndex] != PhaseGeneralParametersDTO::Thermal);
+-	}
+-}
+-
+ /**
+  * Direction set used by one vegetation model: its own DirectionSetLink when
+  * valid, else the first direction set.
+@@ -33,18 +19,6 @@ unsigned int getUnderstoryDirectionSetIndex(const PhaseGeneralParametersDTO & ge
+    return 0;
+ }
+ 
+-VegetationVolumeMaterials processVegetationVolumeMaterials(PhaseGeneralParametersDTO & genDTO) {
+-	VegetationVolumeMaterials vegetation;
+-
+-	vegetation.foliarModel.reset(new FoliarModel());
+-	vegetation.foliarComputation.reset(new FoliarComputation(*vegetation.foliarModel));
+-	vegetation.ladComputation.reset(new LADComputation(*vegetation.foliarModel));
+-
+-	testIfUseSun(genDTO, vegetation.useSpectralIrradianceForReflectance);
+-
+-	return vegetation;
+-}
+-
+ static void fillFoliarModelFaceMultiplicativeFactors(FoliarModel & foliarModel,
+        const phsdata::UnderstoryModel * model, const bool isBottomFace, const unsigned int numberOfBands) {
+    if (model == nullptr || !model->useMultiplicativeFactorForLUT || !model->nodeMultiplicativeFactor.is_initialized())
+@@ -76,19 +50,24 @@ void fillFoliarModelMultiplicativeFactors(const phsdata::UnderstoryMulti & under
+  * whenever the direction set changes between models (the per-model data is
+  * reset by initFoliarModel, so it is recomputed in treat(), per model).
+  */
+-void prepareVegetationDirectionSet(PhaseGeneralParametersDTO & genDTO, VegetationVolumeMaterials & vegetation, const unsigned int directionSetIndex) {
++void prepareVegetationDirectionSet(PhaseGeneralParametersDTO & genDTO,
++		FoliarModel & foliarModel,
++		FoliarComputation & foliarComputation,
++		LADComputation & ladComputation,
++		FTFoliar & fTFoliar,
++		const unsigned int directionSetIndex) {
+    const unsigned int numberOfFoliarModels = genDTO._volumesMaterials.understoryMultiFunctions.size();
+    const vector<DirectionCartesienne> & listDirections = genDTO._directionSet[directionSetIndex]._directions;
+    const unsigned int numberOfDirections = listDirections.size();
+ 
+-	vegetation.foliarModel->initFoliarModel(PhaseProperty::_numberOfSpectralBands,
++	foliarModel.initFoliarModel(PhaseProperty::_numberOfSpectralBands,
+            numberOfDirections);
