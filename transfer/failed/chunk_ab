@@ -1,100 +1,116 @@
-                    std::string & transmittanceDatabaseName);
- 
-    // Mixed optical properties
--	static bool readCoeffDiffParametersForMixedMaterial(unsigned int modelIndex,
--								std::string & phaseName,
--								unsigned int & material1Type,
--								unsigned int & material1Index,
--								std::string & material1Name,
--								unsigned int & material2Type,
--								unsigned int & material2Index,
--								std::string & material2Name,
--								double & percentOfMaterial1);
+diff --git a/Phase/include/materials/SpecularMaterialWriter.hpp b/Phase/include/materials/SpecularMaterialWriter.hpp
+index 2217022..249b45e 100644
+--- a/Phase/include/materials/SpecularMaterialWriter.hpp
++++ b/Phase/include/materials/SpecularMaterialWriter.hpp
+@@ -18,7 +19,8 @@
+ namespace phase {
+ class SpecularMaterialWriter {
+ public:
+-	SpecularMaterialWriter(	const FluorescenceService & fluorescenceService,
++	SpecularMaterialWriter(	const SurfaceMaterialProcessor & processor,
++					const FluorescenceService & fluorescenceService,
+                const OpticalFactorsTextureWriter & opticalFactorsWriter);
+
+    // LuxCore material name (the part after \"scene.materials.\"): shared with
+@@ -35,7 +37,6 @@ public:
+    void writeLuxCoreMaterial(	const phsdata::Specular & s,
+                PhaseGeneralParametersDTO & genDTO,
+                const std::vector<PropertySpecular> & properties,
+-				const std::string & baseMaterial,
+                unsigned int materialID) const;
+
+ private:
+@@ -46,9 +47,9 @@ private:
+
+    void applyMultiplicativeFactors(const phsdata::Specular & s,
+                OpticalPropertyParameters & opticalProperty,
+-				std::vector<PropertySpecular> & properties,
+-				std::string & baseMaterial) const;
++				std::vector<PropertySpecular> & properties) const;
+
++	const SurfaceMaterialProcessor & _processor;
+    const FluorescenceService & _fluorescenceService;
+    const OpticalFactorsTextureWriter & _opticalFactorsWriter;
+ };
+diff --git a/Phase/include/materials/SurfaceMaterialProcessor.hpp b/Phase/include/materials/SurfaceMaterialProcessor.hpp
+index 5b20a63..ecbb09f 100644
+--- a/Phase/include/materials/SurfaceMaterialProcessor.hpp
++++ b/Phase/include/materials/SurfaceMaterialProcessor.hpp
+@@ -43,6 +43,15 @@ class SurfaceMaterialProcessor {public:
+     // is registered for the type.
+     std::string materialNameFor(int xmlType, unsigned int indexFunction) const;
+
++    // Resolves an optical link (Mixed FirstProperty/SecondProperty, Specular
++    // OpticalLink: xmlType = typeOpticalLink, index = indexOpticalLink) to the
++    // LuxCore material name of the referenced surface material. Exits (-6) on
++    // volume links, (-7) if the referenced (type, indexFunction) does not exist
++    // in genDTO._surfaceMaterials.surfaceOpticalFunctions or has no registered
++    // writer.
++    std::string referencedMaterialName(int xmlType, int indexOpticalLink,
++        const PhaseGeneralParametersDTO & genDTO) const;
++
+     // Convenience overload: registers an already-constructed writer and binds
+     // its treat-style method. WriterT must expose:
+     //   bool treat(const phsdata::SurfaceFunction &, const PhaseGeneralParametersDTO &,
+diff --git a/Phase/src/Phase.cpp b/Phase/src/Phase.cpp
+index 2e27cff..e923e66 100755
+--- a/Phase/src/Phase.cpp
++++ b/Phase/src/Phase.cpp
+@@ -1854,7 +1854,7 @@ void processSurfaceMaterials(	PhaseGeneralParametersDTO & genDTO,
+     processor.registerWriter(phsdata::SurfaceFunction::Type::Hapke1981, std::make_shared<phase::Hapke1981MaterialWriter>(fs, oftw));
+     processor.registerWriter(phsdata::SurfaceFunction::Type::Hapke2012, std::make_shared<phase::Hapke2012MaterialWriter>(fs, oftw));
+     processor.registerWriter(phsdata::SurfaceFunction::Type::RPV, std::make_shared<phase::RPVMaterialWriter>(fs, oftw));
+-    processor.registerWriter(phsdata::SurfaceFunction::Type::Specular, std::make_shared<phase::SpecularMaterialWriter>(fs, oftw));
++    processor.registerWriter(phsdata::SurfaceFunction::Type::Specular, std::make_shared<phase::SpecularMaterialWriter>(processor, fs, oftw));
+     processor.registerWriter(phsdata::SurfaceFunction::Type::Mixed, std::make_shared<phase::MixedMaterialWriter>(processor));
+
+     processor.processAll(genDTO, pkmg, outCoeffSpecProperties);
+diff --git a/Phase/src/materials/MixedMaterialWriter.cpp b/Phase/src/materials/MixedMaterialWriter.cpp
+index e8c228b..bbadfdf 100644
+--- a/Phase/src/materials/MixedMaterialWriter.cpp
++++ b/Phase/src/materials/MixedMaterialWriter.cpp
+@@ -21,26 +21,7 @@ std::string MixedMaterialWriter::getMaterialName(unsigned int indexFunction) {
+
+ std::string MixedMaterialWriter::referencedMaterialName(const phsdata::Property & link,
+                    const PhaseGeneralParametersDTO & genDTO) const {
+-	const int xmlType = link.typeOpticalLink;
+-	if (xmlType == globalReferences::AIR_FP || xmlType == globalReferences::FOLIAIRE || xmlType == globalReferences::MIX_VOLUME) {
+-		cerr << \"Can not create a mixed material out of a volume.\" << endl;
+-		exit(-6);
+-	}
 -
--	static bool readCoeffDiffParametersForMixedMaterialXML(unsigned int modelIndex,
--								std::string & phaseName,
--								unsigned int & material1Type,
--								unsigned int & material1Index,
--								std::string & material1Name,
--								unsigned int & material2Type,
--								unsigned int & material2Index,
--								std::string & material2Name,
--								double & percentOfMaterial1);
- 
-    static bool readCoeffDiffParametersForFoliarFluspect(	const int & index,
-                                FluorescenceParameters & fluorescenceParameters,
-diff --git a/Phase/include/materials/Hapke1981MaterialWriter.hpp b/Phase/include/materials/Hapke1981MaterialWriter.hpp
-index 33056ce..bdfce6b 100644
---- a/Phase/include/materials/Hapke1981MaterialWriter.hpp
-+++ b/Phase/include/materials/Hapke1981MaterialWriter.hpp
-@@ -21,6 +21,10 @@ public:
-    Hapke1981MaterialWriter(	const FluorescenceService & fluorescenceService,
-                                const OpticalFactorsTextureWriter & opticalFactorsWriter);
- 
-+	// LuxCore material name (the part after "scene.materials.\"): shared with
-+	// SurfaceMaterialProcessor so mixed materials can reference this material.
-+	static std::string getMaterialName(unsigned int indexFunction);
-+
-    bool treat(	const phsdata::SurfaceFunction & sf,
-                PhaseGeneralParametersDTO & genDTO,
-                const std::vector<bool> & useSpectralIrradianceForReflectance,
-diff --git a/Phase/include/materials/Hapke2012MaterialWriter.hpp b/Phase/include/materials/Hapke2012MaterialWriter.hpp
-index 2558d84..c4e44b0 100644
---- a/Phase/include/materials/Hapke2012MaterialWriter.hpp
-+++ b/Phase/include/materials/Hapke2012MaterialWriter.hpp
-@@ -21,6 +21,10 @@ public:
-    Hapke2012MaterialWriter(	const FluorescenceService & fluorescenceService,
-                                const OpticalFactorsTextureWriter & opticalFactorsWriter);
- 
-+	// LuxCore material name (the part after "scene.materials.\"): shared with
-+	// SurfaceMaterialProcessor so mixed materials can reference this material.
-+	static std::string getMaterialName(unsigned int indexFunction);
-+
-    bool treat(	const phsdata::SurfaceFunction & sf,
-                PhaseGeneralParametersDTO & genDTO,
-                const std::vector<bool> & useSpectralIrradianceForReflectance,
-diff --git a/Phase/include/materials/LambertianMaterialWriter.hpp b/Phase/include/materials/LambertianMaterialWriter.hpp
-index 59f492b..fb3b840 100644
---- a/Phase/include/materials/LambertianMaterialWriter.hpp
-+++ b/Phase/include/materials/LambertianMaterialWriter.hpp
-@@ -25,6 +25,10 @@ public:
-    // Full Lambertian treatment: database preparation, optical properties,
-    // LuxCore scene keys and fluorescence. Returns false if nothing could be
-    // processed (no Lambertian node, Marmit failure, ...).
-+	// LuxCore material name (the part after "scene.materials.\"): shared with
-+	// SurfaceMaterialProcessor so mixed materials can reference this material.
-+	static std::string getMaterialName(unsigned int indexFunction);
-+
-    bool treat(	const phsdata::SurfaceFunction & sf,
-                PhaseGeneralParametersDTO & genDTO,
-                const std::vector<bool> & useSpectralIrradianceForReflectance,
-diff --git a/Phase/include/materials/MixedMaterialWriter.hpp b/Phase/include/materials/MixedMaterialWriter.hpp
-new file mode 100644
-index 0000000..7456cbb
---- /dev/null
-+++ b/Phase/include/materials/MixedMaterialWriter.hpp
-@@ -0,0 +1,42 @@
-+/*
-+ * MixedMaterialWriter.hpp
-+ *
-+ *  Created on: 26 nov. 2026
-+ *      Author: lauretn
-+ */
-+
-+#ifndef INCLUDE_MATERIALS_MIXEDMATERIALWRITER_HPP_
-+#define INCLUDE_MATERIALS_MIXEDMATERIALWRITER_HPP_
-+
-+#include "PhaseDTOs.hpp"
-+#include "../../librairieDart/include/mapping/PhaseKeyMappingGenerator.hpp"
-+#include "materials/SurfaceMaterialProcessor.hpp"
-+
-+namespace phase {
-+class MixedMaterialWriter {
-+public:
-+	explicit MixedMaterialWriter(const SurfaceMaterialProcessor & processor);
-+
-+	// LuxCore material name (the part after "scene.materials.\"): shared with
-+	// SurfaceMaterialProcessor so mixed materials can reference this material.
-+	static std::string getMaterialName(unsigned int indexFunction);
-+
-+	bool treat(	const phsdata::SurfaceFunction & sf,
+-	// The referenced index is the indexFunction of a surface function of that type.
+-	const phsdata::SurfaceFunction::Type type = SurfaceMaterialProcessor::surfaceTypeFromXmlType(xmlType);
+-	bool found = false;
+-	for (const std::shared_ptr<phsdata::SurfaceFunction> & sf : genDTO._surfaceMaterials.surfaceOpticalFunctions) {
+-		if (sf->getType() == type && sf->indexFunction == link.indexOpticalLink) {
+-			found = true;
+-			break;
+-		}
+-	}
+-	if (!found) {
+-		cerr << \"Optical property \" << link.indexOpticalLink << \" of type \" << xmlType << \" referenced by a mixed material doesn't exist.\" << endl;
+-		exit(-7);
+-	}
+-	return _processor.materialNameFor(xmlType, link.indexOpticalLink);
++	return _processor.referencedMaterialName(link.typeOpticalLink, link.indexOpticalLink, genDTO);
+ }
+
+ bool MixedMaterialWriter::treat(const phsdata::SurfaceFunction & sf,
+diff --git a/Phase/src/materials/SpecularMaterialWriter.cpp b/Phase/src/materials/SpecularMaterialWriter.cpp
+index 0ef6fb2..7fcb327 100644
+--- a/Phase/src/materials/SpecularMaterialWriter.cpp
++++ b/Phase/src/materials/SpecularMaterialWriter.cpp
+@@ -17,9 +17,10 @@ std::string SpecularMaterialWriter::getMaterialName(unsigned int indexFunction)
+    return \"specular\" + std::to_string(indexFunction);
+ }
+
+-SpecularMaterialWriter::SpecularMaterialWriter(	const FluorescenceService & fluorescenceService,
++SpecularMaterialWriter::SpecularMaterialWriter(	const SurfaceMaterialProcessor & processor,
++							const FluorescenceService & fluorescenceService,
+                const OpticalFactorsTextureWriter & opticalFactorsWriter) :
+-	_fluorescenceService(fluorescenceService), _opticalFactorsWriter(opticalFactorsWriter) {}
++	_processor(processor), _fluorescenceService(fluorescenceService), _opticalFactorsWriter(opticalFactorsWriter) {}
+
+ bool SpecularMaterialWriter::prepareDatabase(const phsdata::Specular & s,
+                 const PhaseGeneralParametersDTO & genDTO,
