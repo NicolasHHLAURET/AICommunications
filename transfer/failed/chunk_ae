@@ -1,100 +1,100 @@
+-								std::string & material2Name,
+-								double & percentOfMaterial1) {
+-	return readCoeffDiffParametersForMixedMaterialXML(modelIndex, phaseName, material1Type, material1Index, material1Name, material2Type, material2Index, material2Name, percentOfMaterial1);
+-}
 -
- void computeSpecular(	SpecularData & specularProperty,
-                        const double & specularIntensity,
-                        const unsigned int & spectralBandIndex,
-@@ -2146,6 +1917,7 @@ void processSurfaceMaterials(	PhaseGeneralParametersDTO & genDTO,
-     processor.registerWriter(phsdata::SurfaceFunction::Type::Hapke1981, std::make_shared<phase::Hapke1981MaterialWriter>(fs, oftw));
-     processor.registerWriter(phsdata::SurfaceFunction::Type::Hapke2012, std::make_shared<phase::Hapke2012MaterialWriter>(fs, oftw));
-     processor.registerWriter(phsdata::SurfaceFunction::Type::RPV, std::make_shared<phase::RPVMaterialWriter>(fs, oftw));
-+    processor.registerWriter(phsdata::SurfaceFunction::Type::Specular, std::make_shared<phase::SpecularMaterialWriter>(fs, oftw));
+-bool PhaseDAO::readCoeffDiffParametersForMixedMaterialXML(unsigned int modelIndex,
+-								std::string & phaseName,
+-								unsigned int & material1Type,
+-								unsigned int & material1Index,
+-								std::string & material1Name,
+-								unsigned int & material2Type,
+-								unsigned int & material2Index,
+-								std::string & material2Name,
+-								double & percentOfMaterial1) {
+-	try {
+-		ostringstream oss;
+-		oss << modelIndex;
+-		string temp = "Coeff_diff.Surfaces.MixedMultiFunctions.MixedMulti[" + oss.str();
+-		DartSAParameters::get(temp + "].ident", phaseName);
+-		DartSAParameters::get(temp + "].FirstProperty.percentFirst", percentOfMaterial1);
+-		DartSAParameters::get(temp + "].FirstProperty.OpticalPropertyLink.type", material1Type);
+-		DartSAParameters::get(temp + "].FirstProperty.OpticalPropertyLink.indexFctPhase", material1Index);
+-		DartSAParameters::get(temp + "].FirstProperty.OpticalPropertyLink.ident", material1Name);
+-		DartSAParameters::get(temp + "].SecondProperty.OpticalPropertyLink.type", material2Type);
+-		DartSAParameters::get(temp + "].SecondProperty.OpticalPropertyLink.indexFctPhase", material2Index);
+-		DartSAParameters::get(temp + "].SecondProperty.OpticalPropertyLink.ident", material2Name);
+-	} catch (DartException &E) {
+-		cerr << E.getOriginMessage() << endl;
+-		return false;
+-	}
+-
+-	return true;
+-}
+-
+ bool PhaseDAO::readCoeffDiffParametersForRPV(	const int & indice,
+                                string & phaseName,
+                                string & modelName,
+diff --git a/Phase/src/materials/Hapke1981MaterialWriter.cpp b/Phase/src/materials/Hapke1981MaterialWriter.cpp
+index 8d69cb4..540212d 100644
+--- a/Phase/src/materials/Hapke1981MaterialWriter.cpp
++++ b/Phase/src/materials/Hapke1981MaterialWriter.cpp
+@@ -15,6 +15,10 @@
+ #include "database/model/TransmittanceDatabaseParameters.hpp"
  
-     processor.processAll(genDTO, pkmg, outCoeffSpecProperties);
- }
-diff --git a/Phase/src/materials/SpecularMaterialWriter.cpp b/Phase/src/materials/SpecularMaterialWriter.cpp
-new file mode 100644
-index 0000000..76ec54f
---- /dev/null
-+++ b/Phase/src/materials/SpecularMaterialWriter.cpp
-@@ -0,0 +1,218 @@
-+/*
-+ * SpecularMaterialWriter.cpp
-+ *
-+ *  Created on: 26 nov. 2026
-+ *      Author: lauretn
-+ */
+ namespace phase {
 +
-+#include \"materials/SpecularMaterialWriter.hpp\"
-+#include \"materials/LuxCoreMaterialOutput.hpp\"
-+
-+#include \"containers/phaseModel/OpticalPropertyParameters.hpp\"
-+#include \"database/model/RefractiveIndexDatabaseParameters.hpp\"
-+
-+namespace phase {
-+
-+SpecularMaterialWriter::SpecularMaterialWriter(	const FluorescenceService & fluorescenceService,
-+												const OpticalFactorsTextureWriter & opticalFactorsWriter) :
-+	_fluorescenceService(fluorescenceService), _opticalFactorsWriter(opticalFactorsWriter) {}
-+
-+bool SpecularMaterialWriter::prepareDatabase(const phsdata::Specular & s,
-+											 const PhaseGeneralParametersDTO & genDTO,
-+											 OpticalPropertyParameters & opticalProperty) const {
-+	if (!s.databaseName.is_initialized()) {
-+		// No refractive-index database defined: nothing to process.
-+		return false;
-+	}
-+
-+	// The v6 SpecularMulti carries the database name plus the ni/nt model names
-+	// (e.g. \"air\"/\"glass\"); the old v5 DAO read of those names is gone.
-+	auto refractiveIndexDatabaseParameters = std::make_shared<RefractiveIndexDatabaseParameters>(
-+		*s.databaseName, DartEnv::getDatabasePath(*s.databaseName), s.ni, genDTO.numberOfSpectralBands, true, s.nt);
-+	opticalProperty.addDatabaseToProperty(refractiveIndexDatabaseParameters);
-+	return true;
++std::string Hapke1981MaterialWriter::getMaterialName(unsigned int indexFunction) {
++	return "Hapke" + std::to_string(indexFunction);
++}
+ Hapke1981MaterialWriter::Hapke1981MaterialWriter(	const FluorescenceService & fluorescenceService,
+                            const OpticalFactorsTextureWriter & opticalFactorsWriter) :
+        _fluorescenceService(fluorescenceService), _opticalFactorsWriter(opticalFactorsWriter) {}
+@@ -136,7 +140,7 @@ void Hapke1981MaterialWriter::writeLuxCoreMaterial(const phsdata::Hapke1981 & h,
+                                                    const std::vector<PropertyHapke> & hapkeProperties,
+                                                    unsigned int materialID) const {
+     const unsigned int nbBands = genDTO.numberOfSpectralBands;
+-    const std::string keyRoot = "scene.materials.Hapke" + std::to_string(h.indexFunction) + ".";
++    const std::string keyRoot = "scene.materials." + getMaterialName(h.indexFunction) + ".";
+ 
+     genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "type", "Hapke1981");
+     genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "generator", "phase");
+diff --git a/Phase/src/materials/Hapke2012MaterialWriter.cpp b/Phase/src/materials/Hapke2012MaterialWriter.cpp
+index cba8968..6b80c62 100644
+--- a/Phase/src/materials/Hapke2012MaterialWriter.cpp
++++ b/Phase/src/materials/Hapke2012MaterialWriter.cpp
+@@ -16,6 +16,10 @@
+ 
+ namespace phase {
+ 
++std::string Hapke2012MaterialWriter::getMaterialName(unsigned int indexFunction) {
++	return "Hapke2_" + std::to_string(indexFunction);
 +}
 +
-+void SpecularMaterialWriter::applyMultiplicativeFactors(const phsdata::Specular & s,
-+														OpticalPropertyParameters & opticalProperty,
-+														std::vector<PropertySpecular> & properties,
-+														std::string & baseMaterial) const {
-+	auto refractiveIndexDatabaseParameters = std::static_pointer_cast<RefractiveIndexDatabaseParameters>(
-+		opticalProperty.getDatabaseParameters(REFRACTIVEINDEX_DATABASE));
+ Hapke2012MaterialWriter::Hapke2012MaterialWriter(	const FluorescenceService & fluorescenceService,
+                            const OpticalFactorsTextureWriter & opticalFactorsWriter) :
+        _fluorescenceService(fluorescenceService), _opticalFactorsWriter(opticalFactorsWriter) {}
+@@ -133,7 +137,7 @@ void Hapke2012MaterialWriter::writeLuxCoreMaterial(const phsdata::Hapke2012 & h,
+                                                    const std::vector<PropertyHapke2> & hapke2Properties,
+                                                    unsigned int materialID) const {
+     const unsigned int nbBands = genDTO.numberOfSpectralBands;
+-    const std::string keyRoot = "scene.materials.Hapke2_" + std::to_string(h.indexFunction) + ".";
++    const std::string keyRoot = "scene.materials." + getMaterialName(h.indexFunction) + ".";
+ 
+     genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "type", "Hapke2012");
+     genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "generator", "phase");
+diff --git a/Phase/src/materials/LambertianMaterialWriter.cpp b/Phase/src/materials/LambertianMaterialWriter.cpp
+index f7c9e56..e29090c 100644
+--- a/Phase/src/materials/LambertianMaterialWriter.cpp
++++ b/Phase/src/materials/LambertianMaterialWriter.cpp
+@@ -17,6 +17,10 @@
+ #include <boost/uuid/uuid_io.hpp>
+ 
+ namespace phase {
 +
-+	// materialCharacter==2 (glossy coating + diffuse base) links the base BSDF
-+	// through OpticalLink; the other characters have no base.
-+	int baseBSDF = 0;
-+	int baseBSDFIndex = 0;
-+	if (s.materialCharacter == 2 && s.opticalLink.is_initialized()) {
-+		baseBSDF = s.opticalLink->typeOpticalLink;
-+		baseBSDFIndex = s.opticalLink->indexOpticalLink;
-+	}
-+	// Same base-material mapping as the legacy treatSpecular (the
-+	// \"notImpementedYet\" literal is emitted as-is, kept for output parity).
-+	if (baseBSDF == 0) { // lambertian
-+		baseMaterial = \"lambertian\";
-+	} else if (baseBSDF == 4) { // RPV
-+		baseMaterial = \"RPV\";
-+	} else if (baseBSDF == 2) { // Hapke
-+		baseMaterial = \"notImpementedYet\";
-+		baseBSDFIndex = 0;
-+	} else if (baseBSDF == 22) { // mixed
-+		baseMaterial = \"notImpementedYet\";
-+		baseBSDFIndex = 0;
-+	} else {
-+		baseMaterial = \"lambertian\";
-+		baseBSDFIndex = 0;
-+	}
-+
-+	for (unsigned int sbi = 0; sbi < properties.size(); ++sbi) {
-+		properties[sbi].ni = refractiveIndexDatabaseParameters->getRefractionIndex(sbi);
-+		properties[sbi].nt = refractiveIndexDatabaseParameters->getRefractionIndex2(sbi);
-+		// opticalDepth plays the role of the old per-model tau.
-+		properties[sbi].tau = s.opticalDepth;
-+		// No database for the intensities: the multiplicative factors are the values.
-+		properties[sbi].intensityR = 1.;
-+		properties[sbi].intensityT = 1.;
-+		properties[sbi].roughness = s.roughnessFactor;
-+		properties[sbi].type = s.materialCharacter;
-+		properties[sbi].baseBSDF = baseBSDF;
-+		properties[sbi].baseBSDFIndex = baseBSDFIndex;
-+	}
-+
-+	if (s.nodeMultiplicativeFactor.is_initialized()) {
++std::string LambertianMaterialWriter::getMaterialName(unsigned int indexFunction) {
++	return "lambertian" + std::to_string(indexFunction);
++}
+ LambertianMaterialWriter::LambertianMaterialWriter(	const FluorescenceService & fluorescenceService,
+                            const OpticalFactorsTextureWriter & opticalFactorsWriter) :
+        _fluorescenceService(fluorescenceService), _opticalFactorsWriter(opticalFactorsWriter) {}

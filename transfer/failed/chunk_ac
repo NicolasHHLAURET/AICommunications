@@ -1,101 +1,100 @@
--
--		PhaseUtils::updatePropertyForOpticalPropertyInCoeffDiffXmlFile("MultispectralOpticalFunctions.SpecularMultiFunctions.SpecularMulti[",
--				specularPropertyParameters.getModelIndex(), -1.0, -1.0, -1.0);
--
--
--		ni[spectralBandIndex] = specularProperty.ni;
--		nt[spectralBandIndex] = specularProperty.nt;
--		tau[spectralBandIndex] = specularProperty.tau;
--		refl[spectralBandIndex] = specularProperty.intensityR;
--		trans[spectralBandIndex] = specularProperty.intensityT;
--		roughness = specularProperty.roughness;
--		materialType = specularProperty.type;
--
--		if(specularProperty.baseBSDF == 0){// lambertian
--			baseMaterial = "lambertian";
--		}else if(specularProperty.baseBSDF == 4){ //RPV
--			baseMaterial = "RPV";
--		}else if(specularProperty.baseBSDF == 2){ // Hapke
--			baseMaterial = "notImpementedYet";
--			specularProperty.baseBSDFIndex = 0;
--		}else if(specularProperty.baseBSDF == 22){ // mixed
--			baseMaterial = "notImpementedYet";
--			specularProperty.baseBSDFIndex = 0;
--		}else{
--			baseMaterial = "lambertian";
--			specularProperty.baseBSDFIndex = 0;
--		}
--		baseBSDFType = specularProperty.baseBSDF;
--		baseBSDFIndex = specularProperty.baseBSDFIndex;
--		//TODO write down specular information
--//		writeRPV(pkmg, outCoeffSpecProperties, rpvProperty, rpvPropertyParameters.getModelName(), dTauMoy, rpvPropertyParameters.getModelIndex(),
--//				spectralBandIndex);
--	}
--
--	std::ostringstream keyRoot;
--	keyRoot << "scene.materials." << "specular" <<  specularPropertyParameters.getModelIndex() /*<< "_" << tmpIndex*/ << ".";
--	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "generator", "phase");
--	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "id", std::to_string(opIndex));
--
--//			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "temperatureIndex", std::to_string(tmpIndex));
--	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "opIndex", std::to_string(specularPropertyParameters.getModelIndex()));
--
--	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "generator", "phase");
--
--	std::ostringstream valueNi,valueNt,valueR,valueT, valueTau, emissivity;
--	valueNi << setprecision(15);
--	valueNt << setprecision(15);
--	valueR << setprecision(15);
--	valueT << setprecision(15); // named H in DART-FT while it name Rc in RAMI definition
--	valueTau << setprecision(15);
--	emissivity << setprecision(15);
--
--	valueNi << ni[0]; valueNt<<nt[0]; valueR<<refl[0]; valueT<<trans[0]; valueTau<<tau[0];
--	double R0 = (nt[0] - ni[0])/(nt[0] + ni[0]);
--	R0 *= R0; // nadir incidence
--
--	emissivity << 1.; // Force emissivity to 1, the real emissivity is computed in dart
--
--	for (unsigned int spectralBandIndex = 1; spectralBandIndex < genDTO.numberOfSpectralBands; spectralBandIndex++) {
--		valueNi << " " << ni[spectralBandIndex]; valueNt << " " << nt[spectralBandIndex];
--		valueR << " " << refl[spectralBandIndex]; valueT << " " << trans[spectralBandIndex];
--		valueTau<< " " << tau[spectralBandIndex];
--		R0 = (nt[spectralBandIndex] - ni[spectralBandIndex])/(nt[spectralBandIndex] + ni[spectralBandIndex]);
--		R0 *= R0; // nadir incidence
--		emissivity << " " << 1.; // Force emissivity to 1, the real emissivity is computed in dart
--	}
--
--	if (specularPropertyParameters.useDirectionalDirectTransmittance()) {
--		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "transparency.angularStep", std::to_string(specularPropertyParameters._angularStep));
--		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "transparency.directionalFile", specularPropertyParameters._ddtFilePath);
--	}
--
--	if (PhaseProperty::getPolarization()) {
--		// 3 * numberOfSpectralBands are added to simulate Q, U, V
--		// The optical properties are repeated in these bands
--		for (unsigned int stokesCompoent = 0; stokesCompoent < 3; ++stokesCompoent) {
--			for (unsigned int spectralBandIndex = 0; spectralBandIndex < genDTO.numberOfSpectralBands; spectralBandIndex++) {
--				valueNi << " " << ni[spectralBandIndex]; valueNt << " " << nt[spectralBandIndex];
--				valueR << " " << refl[spectralBandIndex]; valueT << " " << trans[spectralBandIndex];
--				valueTau<< " " << tau[spectralBandIndex];
--				R0 = (1 - nt[spectralBandIndex]/ni[spectralBandIndex])/(1 + nt[spectralBandIndex]/ni[spectralBandIndex]); // nadir incidence
--				emissivity << " " << 1.;
--			}
--		}
--	}
--
--	if (PhaseProperty::getFluorescence()) {
--		// 2 * numberOfSpectralBands are added to simulate PSI and PSII
--		// The optical properties are repeated in these bands
--		for (unsigned int photoSystemIndex = 0; photoSystemIndex < 2; ++photoSystemIndex) {
--			for (unsigned int spectralBandIndex = 0; spectralBandIndex < genDTO.numberOfSpectralBands; spectralBandIndex++) {
--				valueNi << " " << ni[spectralBandIndex]; valueNt << " " << nt[spectralBandIndex];
--				valueR << " " << refl[spectralBandIndex]; valueT << " " << trans[spectralBandIndex];
--				valueTau<< " " << tau[spectralBandIndex];
--				R0 = (1 - nt[spectralBandIndex]/ni[spectralBandIndex])/(1 + nt[spectralBandIndex]/ni[spectralBandIndex]); // nadir incidence
--				emissivity << " " << 1.;
--			}
--		}
--	}
--
--	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "ni", valueNi.str());
++				PhaseGeneralParametersDTO & genDTO,
++				const std::vector<bool> & useSpectralIrradianceForReflectance,
++				unsigned int materialIndex,
++				PhaseKeyMappingGenerator & pkmg,
++				std::ofstream & outCoeffSpecProperties) const;
++
++private:
++	// Resolves one Mixed link (FirstProperty/SecondProperty) to the LuxCore
++	// material name of the referenced material, via the processor's writer map.
++	// Exits (-6) on volume links, (-7) on unknown/unregistered references.
++	std::string referencedMaterialName(const phsdata::Property & link,
++										const PhaseGeneralParametersDTO & genDTO) const;
++
++	const SurfaceMaterialProcessor & _processor;
++};
++}
++
++#endif /* INCLUDE_MATERIALS_MIXEDMATERIALWRITER_HPP_ */
+diff --git a/Phase/include/materials/RPVMaterialWriter.hpp b/Phase/include/materials/RPVMaterialWriter.hpp
+index 38f6060..132e660 100644
+--- a/Phase/include/materials/RPVMaterialWriter.hpp
++++ b/Phase/include/materials/RPVMaterialWriter.hpp
+@@ -21,6 +21,10 @@ public:
+    RPVMaterialWriter(	const FluorescenceService & fluorescenceService,
+                            const OpticalFactorsTextureWriter & opticalFactorsWriter);
+ 
++	// LuxCore material name (the part after "scene.materials.\"): shared with
++	// SurfaceMaterialProcessor so mixed materials can reference this material.
++	static std::string getMaterialName(unsigned int indexFunction);
++
+    bool treat(	const phsdata::SurfaceFunction & sf,
+                PhaseGeneralParametersDTO & genDTO,
+                const std::vector<bool> & useSpectralIrradianceForReflectance,
+diff --git a/Phase/include/materials/SpecularMaterialWriter.hpp b/Phase/include/materials/SpecularMaterialWriter.hpp
+index 6b9a093..2217022 100644
+--- a/Phase/include/materials/SpecularMaterialWriter.hpp
++++ b/Phase/include/materials/SpecularMaterialWriter.hpp
+@@ -21,6 +21,10 @@ public:
+    SpecularMaterialWriter(	const FluorescenceService & fluorescenceService,
+                                const OpticalFactorsTextureWriter & opticalFactorsWriter);
+ 
++	// LuxCore material name (the part after "scene.materials.\"): shared with
++	// SurfaceMaterialProcessor so mixed materials can reference this material.
++	static std::string getMaterialName(unsigned int indexFunction);
++
+    bool treat(	const phsdata::SurfaceFunction & sf,
+                PhaseGeneralParametersDTO & genDTO,
+                const std::vector<bool> & useSpectralIrradianceForReflectance,
+diff --git a/Phase/include/materials/SurfaceMaterialProcessor.hpp b/Phase/include/materials/SurfaceMaterialProcessor.hpp
+index 56adf1b..5b20a63 100644
+--- a/Phase/include/materials/SurfaceMaterialProcessor.hpp
++++ b/Phase/include/materials/SurfaceMaterialProcessor.hpp
+@@ -27,6 +27,22 @@ class SurfaceMaterialProcessor {public:
+     // Throws std::invalid_argument if handler is null.
+     void registerWriter(phsdata::SurfaceFunction::Type type, MaterialHandler handler);
+ 
++    // LuxCore material name provider per type: name = getMaterialName(indexFunction).
++    // Registered automatically by the template registerWriter below.
++    using NameProvider = std::function<std::string(unsigned int)>;
++    void registerNameProvider(phsdata::SurfaceFunction::Type type, NameProvider provider);
++
++    // Translates the XML/globalReferences type value (typeOpticalLink in
++    // Mixed links: 0=Lambertian, 2=Hapke, 4=RPV, 11=Phase Extern, 13=Specular,
++    // 22=Mixed, 23=Hapke2) into the phsdata storage type. Exits on unknown.
++    static phsdata::SurfaceFunction::Type surfaceTypeFromXmlType(int xmlType);
++
++    // LuxCore material name referenced by a Mixed link: resolves xmlType through
++    // the registered writer of that type, so the name is guaranteed to match the
++    // one written by that writer's writeLuxCoreMaterial. Exits (-7) if no writer
++    // is registered for the type.
++    std::string materialNameFor(int xmlType, unsigned int indexFunction) const;
++
+     // Convenience overload: registers an already-constructed writer and binds
+     // its treat-style method. WriterT must expose:
+     //   bool treat(const phsdata::SurfaceFunction &, const PhaseGeneralParametersDTO &,
+@@ -46,6 +62,9 @@ class SurfaceMaterialProcessor {public:
+                 return writer->treat(sf, genDTO, useSpectralIrradianceForReflectance,
+                     materialIndex, pkmg, outCoeffSpecProperties);
+             });
++        registerNameProvider(type, [](unsigned int indexFunction) {
++            return WriterT::getMaterialName(indexFunction);
++        });
+     }
+ 
+     // Replaces processSurfaceMaterials: iterates all surface functions,
+@@ -60,6 +79,7 @@ private:
+     std::vector<bool> computeUseSpectralIrradiance(const PhaseGeneralParametersDTO & genDTO) const;
+ 
+     std::map<phsdata::SurfaceFunction::Type, MaterialHandler> _handlers;
++    std::map<phsdata::SurfaceFunction::Type, NameProvider> _nameProviders;
+ };
+ } // namespace phase
+ 
+diff --git a/Phase/src/Phase.cpp b/Phase/src/Phase.cpp
+index e5873e5..2e27cff 100755
+--- a/Phase/src/Phase.cpp
++++ b/Phase/src/Phase.cpp
+@@ -107,6 +107,7 @@ extern "C" int sqlite3_initialize(void);
+ #include "materials/Hapke2012MaterialWriter.hpp"
+ #include "materials/RPVMaterialWriter.hpp"

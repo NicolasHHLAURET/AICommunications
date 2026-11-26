@@ -1,100 +1,100 @@
-+		// Same XML semantics as the other materials: `factors` always contains exactly
-+		// one SpecularMultiplicativeFactorForLUT per spectral band.
-+		const phsdata::MultiplicativeFactorList & mfl = *s.nodeMultiplicativeFactor;
-+		for (unsigned int sbi = 0; sbi < properties.size() && sbi < mfl.factors.size(); ++sbi) {
-+			auto smf = std::static_pointer_cast<const phsdata::SpecularMultiplicativeFactor>(mfl.factors[sbi]);
-+			properties[sbi].ni *= smf->niFactor;
-+			properties[sbi].nt *= smf->ntFactor;
-+			properties[sbi].tau *= smf->opticalDepthFactor;
-+			properties[sbi].intensityR *= smf->reflectionIntensityFactor;
-+			properties[sbi].intensityT *= smf->transmissionIntensityFactor;
+@@ -173,7 +177,7 @@ void LambertianMaterialWriter::writeLuxCoreMaterial(	PhaseGeneralParametersDTO &
+                        const std::vector<PropertyLambertian> & lambertianProperties,
+                        const FluorescenceResults & fluorescenceResults) const {
+    const unsigned int nbBands = genDTO.numberOfSpectralBands;
+-	const std::string keyRoot = "scene.materials.lambertian" + std::to_string(materialIndex) + ".";
++	const std::string keyRoot = "scene.materials." + getMaterialName(materialIndex) + ".";
+ 
+    // Fluorescent only if the matrices were actually computed and written successfully.
+    const bool fluorescentMaterial = PhaseProperty::getFluorescence() && fluorescenceResults.isFluorescent;
+diff --git a/Phase/src/materials/MixedMaterialWriter.cpp b/Phase/src/materials/MixedMaterialWriter.cpp
+new file mode 100644
+index 0000000..e8c228b
+--- /dev/null
++++ b/Phase/src/materials/MixedMaterialWriter.cpp
+@@ -0,0 +1,71 @@
++/*
++ * MixedMaterialWriter.cpp
++ *
++ *  Created on: 26 nov. 2026
++ *      Author: lauretn
++ */
++
++#include "materials/MixedMaterialWriter.hpp"
++
++#include <cstdlib>
++#include <iostream>
++
++namespace phase {
++
++MixedMaterialWriter::MixedMaterialWriter(const SurfaceMaterialProcessor & processor) :
++	_processor(processor) {}
++
++std::string MixedMaterialWriter::getMaterialName(unsigned int indexFunction) {
++	return "mixedMat" + std::to_string(indexFunction);
++}
++
++std::string MixedMaterialWriter::referencedMaterialName(const phsdata::Property & link,
++														const PhaseGeneralParametersDTO & genDTO) const {
++	const int xmlType = link.typeOpticalLink;
++	if (xmlType == globalReferences::AIR_FP || xmlType == globalReferences::FOLIAIRE || xmlType == globalReferences::MIX_VOLUME) {
++		cerr << "Can not create a mixed material out of a volume." << endl;
++		exit(-6);
++	}
++
++	// The referenced index is the indexFunction of a surface function of that type.
++	const phsdata::SurfaceFunction::Type type = SurfaceMaterialProcessor::surfaceTypeFromXmlType(xmlType);
++	bool found = false;
++	for (const std::shared_ptr<phsdata::SurfaceFunction> & sf : genDTO._surfaceMaterials.surfaceOpticalFunctions) {
++		if (sf->getType() == type && sf->indexFunction == link.indexOpticalLink) {
++			found = true;
++			break;
 +		}
 +	}
++	if (!found) {
++		cerr << "Optical property " << link.indexOpticalLink << " of type " << xmlType << " referenced by a mixed material doesn't exist." << endl;
++		exit(-7);
++	}
++	return _processor.materialNameFor(xmlType, link.indexOpticalLink);
 +}
 +
-+bool SpecularMaterialWriter::treat(const phsdata::SurfaceFunction & sf,
-+								   PhaseGeneralParametersDTO & genDTO,
-+								   const std::vector<bool> & useSpectralIrradianceForReflectance,
-+								   unsigned int materialIndex,
-+								   PhaseKeyMappingGenerator & pkmg,
-+								   std::ofstream & outCoeffSpecProperties) const {
-+	const phsdata::Specular & s = dynamic_cast<const phsdata::Specular &>(sf);
-+	OpticalPropertyParameters opticalProperty(SPECULAR_PROPERTY, s.indexFunction, s.functionName);
-+	if (!prepareDatabase(s, genDTO, opticalProperty))
-+		return false;
++bool MixedMaterialWriter::treat(const phsdata::SurfaceFunction & sf,
++								PhaseGeneralParametersDTO & genDTO,
++								const std::vector<bool> & useSpectralIrradianceForReflectance,
++								unsigned int materialIndex,
++								PhaseKeyMappingGenerator & pkmg,
++								std::ofstream & outCoeffSpecProperties) const {
++	const phsdata::Mixed & m = dynamic_cast<const phsdata::Mixed &>(sf);
 +
-+	for (unsigned int i = 0; i < opticalProperty.getNbDatabaseForProperty(); ++i)
-+		PhaseProperty::readReflectanceParameters(useSpectralIrradianceForReflectance, opticalProperty.getDatabaseForProperty(i));
++	const std::string material1Name = referencedMaterialName(m.firstProperties, genDTO);
++	const std::string material2Name = referencedMaterialName(m.secondProperties, genDTO);
 +
-+	std::vector<PropertySpecular> properties(genDTO.numberOfSpectralBands);
-+	std::string baseMaterial;
-+	applyMultiplicativeFactors(s, opticalProperty, properties, baseMaterial);
++	const std::string keyRoot = "scene.materials." + getMaterialName(m.indexFunction) + ".";
 +
-+	writeLuxCoreMaterial(s, genDTO, properties, baseMaterial, materialIndex);
++	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "type", "mix");
++	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "generator", "phase");
++	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "id", std::to_string(materialIndex));
++	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "amount", std::to_string(m.firstProperties.percentFirst / 100.));
++	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "material1", material1Name);
++	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "material1Type", std::to_string(m.firstProperties.typeOpticalLink));
++	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "material1Index", std::to_string(m.firstProperties.indexOpticalLink));
++	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "material2", material2Name);
++	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "material2Type", std::to_string(m.secondProperties.typeOpticalLink));
++	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "material2Index", std::to_string(m.secondProperties.indexOpticalLink));
 +	return true;
 +}
++}
+diff --git a/Phase/src/materials/RPVMaterialWriter.cpp b/Phase/src/materials/RPVMaterialWriter.cpp
+index 9e90946..1495665 100644
+--- a/Phase/src/materials/RPVMaterialWriter.cpp
++++ b/Phase/src/materials/RPVMaterialWriter.cpp
+@@ -16,6 +16,10 @@
+ 
+ namespace phase {
+ 
++std::string RPVMaterialWriter::getMaterialName(unsigned int indexFunction) {
++	return "RPV" + std::to_string(indexFunction);
++}
 +
-+void SpecularMaterialWriter::writeLuxCoreMaterial(const phsdata::Specular & s,
-+												  PhaseGeneralParametersDTO & genDTO,
-+												  const std::vector<PropertySpecular> & properties,
-+												  const std::string & baseMaterial,
-+												  unsigned int materialID) const {
-+	const unsigned int nbBands = genDTO.numberOfSpectralBands;
-+	const std::string keyRoot = "scene.materials.specular" + std::to_string(s.indexFunction) + ".";
-+	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "generator", "phase");
-+	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "id", std::to_string(materialID));
-+	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "opIndex", std::to_string(s.indexFunction));
-+
-+	auto niValue = [&properties](unsigned int sbi) { return properties[sbi].ni; };
-+	auto ntValue = [&properties](unsigned int sbi) { return properties[sbi].nt; };
-+	auto krValue = [&properties](unsigned int sbi) { return properties[sbi].intensityR; };
-+	auto ktValue = [&properties](unsigned int sbi) { return properties[sbi].intensityT; };
-+	auto tauValue = [&properties](unsigned int sbi) { return properties[sbi].tau; };
-+
-+	std::ostringstream valueNi, valueNt, valueR, valueT, valueTau, emissivity;
-+	valueNi << setprecision(15);
-+	valueNi << niValue(0);
-+	luxcore::appendPerBandDuplicated(valueNi, nbBands, niValue);
-+
-+	valueNt << setprecision(15);
-+	valueNt << ntValue(0);
-+	luxcore::appendPerBandDuplicated(valueNt, nbBands, ntValue);
-+
-+	valueR << setprecision(15);
-+	valueR << krValue(0);
-+	luxcore::appendPerBandDuplicated(valueR, nbBands, krValue);
-+
-+	valueT << setprecision(15);
-+	valueT << ktValue(0);
-+	luxcore::appendPerBandDuplicated(valueT, nbBands, ktValue);
-+
-+	valueTau << setprecision(15);
-+	valueTau << tauValue(0);
-+	luxcore::appendPerBandDuplicated(valueTau, nbBands, tauValue);
-+
-+	// Emissivity is forced to 1 (the real emissivity is computed in DART); it is zero for the extra simulated bands (Q,U,V and PSI,PSII).
-+	emissivity << setprecision(15);
-+	emissivity << 1.;
-+	luxcore::appendPerBandZeroPadded(emissivity, nbBands, [](unsigned int) { return 1.; });
-+
-+	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "ni", valueNi.str());
-+	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "nt", valueNt.str());
-+	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "kr", valueR.str());
-+	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "kt", valueT.str());
-+	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "tau", valueTau.str());
-+	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "emission.gain", emissivity.str());
-+
-+	// roughness / material type are band-independent in the v6 XML.
-+	const double roughness = properties[0].roughness;
-+	const int materialType = properties[0].type;
-+
-+	if (materialType == 0) { // interface
-+		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "inbounce", "0");
-+		if (roughness < 1e-3) {
-+			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "type", "specular");
-+		} else {
-+			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "type", "glossy");
-+			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "roughness", std::to_string(roughness));
-+		}
-+	} else if (materialType == 1) { // thin layer
-+		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "inbounce", "1");
+ RPVMaterialWriter::RPVMaterialWriter(	const FluorescenceService & fluorescenceService,
+                            const OpticalFactorsTextureWriter & opticalFactorsWriter) :

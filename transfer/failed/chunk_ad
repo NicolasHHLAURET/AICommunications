@@ -1,102 +1,100 @@
--	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "nt", valueNt.str());
--	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "kr", valueR.str());
--	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "kt", valueT.str());
--	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "tau", valueTau.str());
--	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "emission.gain", emissivity.str());
+ #include "materials/SpecularMaterialWriter.hpp"
++#include "materials/MixedMaterialWriter.hpp"
+ #include "materials/VegetationMaterialWriter.hpp"
+ 
+ //----------------------------------------------------------------------------------------
+@@ -1187,70 +1188,6 @@ void readLiDAR(){
+    PhaseDAO::readLiDARXML();
+ }
+ 
+-void treatMixedMaterial(PhaseGeneralParametersDTO & genDTO,	unsigned int opIndex, unsigned int pfIndex) {
+-	// LuxCore
+-	unsigned int model1Type, model1Index, model2Type, model2Index;
+-	std::string phaseName, model1Name, model2Name;
+-	double percentOfModel1;
+-	EXIT_IF(!PhaseDAO::readCoeffDiffParametersForMixedMaterial(pfIndex, phaseName, model1Type, model1Index, model1Name, model2Type, model2Index, model2Name, percentOfModel1), "");
 -
+-	std::string material1Name = getMaterialName(model1Type, model1Index);
+-	std::string material2Name = getMaterialName(model2Type, model2Index);
 -
--	if(materialType == 0){ // interface
--		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "inbounce", "0");
--		if(roughness < 1e-3){
--			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "type", "specular");
--		}else{
--			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "type", "glossy");
--			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "roughness", std::to_string(roughness));
--		}
--	}else if(materialType == 1){ // thin layer
--		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "inbounce", "1");
--		if(roughness < 1e-3){
--			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "type", "specular");
--		}else{
--			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "type", "glossy");
--			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "roughness", std::to_string(roughness));
--		}
--	}else if(materialType == 2){ // glossy coating + diffuse base
--		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "type", "glossydiffuse");
--		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "roughness", std::to_string(roughness));
--		std::ostringstream baseMat;
--		baseMat << baseMaterial << baseBSDFIndex /*<< "_" << tmpIndex*/;
+-	std::string mixedMaterialRootKey = "scene.materials.mixedMat" + boost::lexical_cast<std::string>(pfIndex) + ".";
 -
--		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "base", baseMat.str());
+-	genDTO.luxCoreRenderSceneProperties.ajouterCle(mixedMaterialRootKey + "type", "mix");
+-	genDTO.luxCoreRenderSceneProperties.ajouterCle(mixedMaterialRootKey + "generator", "phase");
+-	genDTO.luxCoreRenderSceneProperties.ajouterCle(mixedMaterialRootKey + "id", std::to_string(opIndex));
+-	genDTO.luxCoreRenderSceneProperties.ajouterCle(mixedMaterialRootKey + "amount", boost::lexical_cast<std::string>(percentOfModel1 / 100.));
+-	genDTO.luxCoreRenderSceneProperties.ajouterCle(mixedMaterialRootKey + "material1", material1Name);
+-	genDTO.luxCoreRenderSceneProperties.ajouterCle(mixedMaterialRootKey + "material1Type", boost::lexical_cast<std::string>(model1Type));
+-	genDTO.luxCoreRenderSceneProperties.ajouterCle(mixedMaterialRootKey + "material1Index", boost::lexical_cast<std::string>(model1Index));
+-	genDTO.luxCoreRenderSceneProperties.ajouterCle(mixedMaterialRootKey + "material2", material2Name);
+-	genDTO.luxCoreRenderSceneProperties.ajouterCle(mixedMaterialRootKey + "material2Type", boost::lexical_cast<std::string>(model2Type));
+-	genDTO.luxCoreRenderSceneProperties.ajouterCle(mixedMaterialRootKey + "material2Index", boost::lexical_cast<std::string>(model2Index));
+-}
 -
--		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "baseType", std::to_string(baseBSDFType));
--		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "baseIndex", std::to_string(baseBSDFIndex));
--	}
--
--
--	OpticalFactorParameters opticalFactorParameters;
--	if (PhaseDAO::readCoeffDiffParametersForLambertianOpticalFactors(specularPropertyParameters.getModelIndex(), opticalFactorParameters)) {
--		std::string textureName = "l" + boost::lexical_cast<std::string>(specularPropertyParameters.getModelIndex()) + "OF";
--		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "opticalFactors", textureName);
--
--		std::string textureKeyRoot = "scene.textures." + textureName;
--		genDTO.luxCoreRenderSceneProperties.ajouterCle(textureKeyRoot + ".type", "opticalFactors");
--		genDTO.luxCoreRenderSceneProperties.ajouterCle(textureKeyRoot + ".file", textureName + ".bin");
--		genDTO.luxCoreRenderSceneProperties.ajouterCle(textureKeyRoot + ".generator", "phase");
--
--		if (opticalFactorParameters.sameOpticalFactorForAllBands) {
--			genDTO.luxCoreRenderSceneProperties.ajouterCle(textureKeyRoot + ".inputs", opticalFactorParameters.fileNames[0]);
--			genDTO.luxCoreRenderSceneProperties.ajouterCle(textureKeyRoot + ".inputsDuplication", opticalFactorParameters.duplicateFirstLayer[0] ? "1" : "0");
--		} else {
--			std::ostringstream inputsOSS, duplicationOSS;
--			inputsOSS << opticalFactorParameters.fileNames[0];
--			duplicationOSS << opticalFactorParameters.duplicateFirstLayer[0];
--			for (unsigned int spectralBandIndex = 1; spectralBandIndex < genDTO.numberOfSpectralBands; spectralBandIndex++) {
--				inputsOSS << ";" << (opticalFactorParameters.fileNames[spectralBandIndex] == "" ? "1" : opticalFactorParameters.fileNames[spectralBandIndex]);
--				duplicationOSS << ";" << (opticalFactorParameters.duplicateFirstLayer[spectralBandIndex] ? "1" : "0");
+-std::string getMaterialName(unsigned int modelType, unsigned int modelIndex) {
+-	std::string materialName = "";
+-	switch (modelType) {
+-		case globalReferences::LAMBERTIEN:
+-			if (modelIndex >= PhaseProperty::getNumberOfLambertianModels()) {
+-				cerr << "Lambertian optical property " << modelIndex << " referenced by a mixed material doesn't exists." << endl;
+-				exit(-7);
 -			}
--			genDTO.luxCoreRenderSceneProperties.ajouterCle(textureKeyRoot + ".inputs", inputsOSS.str());
--			genDTO.luxCoreRenderSceneProperties.ajouterCle(textureKeyRoot + ".inputsDuplication", duplicationOSS.str());
--		}
+-			materialName = "lambertian";
+-			break;
+-		case globalReferences::RPV_PHASE:
+-			if (modelIndex >= PhaseProperty::getNumberOfRPVModels()) {
+-				cerr << "RPV optical property " << modelIndex << " referenced by a mixed material doesn't exists." << endl;
+-				exit(-7);
+-			}
+-			materialName = "RPV";
+-			break;
+-		case globalReferences::AIR_FP:
+-		case globalReferences::FOLIAIRE:
+-		case globalReferences::MIX_VOLUME:
+-			cerr << "Can not create a mixed material out of a volume." << endl;
+-			exit(-6);
+-		case globalReferences::SPECULAR_LUX:
+-			if (modelIndex >= PhaseProperty::getNumberOfSpecularModels()) {
+-				cerr << "Specular optical property " << modelIndex << " referenced by a mixed material doesn't exists." << endl;
+-				exit(-7);
+-			}
+-			materialName = "specular";
+-			break;
+-		case globalReferences::MIX_MATERIAL:
+-			materialName = "mixedMat";
+-			break;
+-		default:
+-			materialName = "notImplementedYet";
+-			break;
 -	}
+-	materialName += boost::lexical_cast<std::string>(modelIndex) /*+ "_0"*/;
+-	return materialName;
 -}
 -
--
--void computeOpticalPropertiesSpecular(const unsigned int& spectralBandIndex,
--									OpticalPropertyParameters & specularPropertyParameters,
--									const vector<DirectionCartesienne> & listDirections,
--									PropertySpecular & specularProperty,
--									double & dTauMoy,
--									double & albedo) {
--
--	shared_ptr<RefractiveIndexDatabaseParameters> refractiveIndexDatabaseParameters = ::static_pointer_cast<RefractiveIndexDatabaseParameters>(
--			specularPropertyParameters.getDatabaseParameters(REFRACTIVEINDEX_DATABASE));
--
--	shared_ptr<PhaseTemperatureDatabaseParameters> temperatureDatabaseParameters = ::static_pointer_cast<PhaseTemperatureDatabaseParameters>(
--			specularPropertyParameters.getDatabaseParameters(TEMPERATURE_DATABASE));
--	shared_ptr<TransmittanceDatabaseParameters> transmittanceParameters = ::static_pointer_cast<TransmittanceDatabaseParameters>(
--			specularPropertyParameters.getDatabaseParameters(TRANSMITTANCE_DATABASE));
--
--	unsigned int modelIndex = specularPropertyParameters.getModelIndex();
--
--	specularProperty.ni = refractiveIndexDatabaseParameters.get()->getRefractionIndex(spectralBandIndex)
--			* PhaseProperty::getMultiplicativeFactorNiForSpecular(modelIndex, spectralBandIndex);
--
--	specularProperty.nt = refractiveIndexDatabaseParameters.get()->getRefractionIndex2(spectralBandIndex)
--			* PhaseProperty::getMultiplicativeFactorNtForSpecular(modelIndex, spectralBandIndex);
--
--	PhaseDAO::readCoeffDiffParametersForSpecularTau(specularPropertyParameters.getModelIndex(), specularProperty.tau);
--	specularProperty.tau = specularProperty.tau * PhaseProperty::getMultiplicativeFactorTauForSpecular(modelIndex, spectralBandIndex);
--
--	specularProperty.intensityR = PhaseProperty::getMultiplicativeFactorReflectionForSpecular(modelIndex, spectralBandIndex);
--	specularProperty.intensityT = PhaseProperty::getMultiplicativeFactorTransmissionForSpecular(modelIndex, spectralBandIndex);
--
--	// TODO I need to compute the specularProperty.specularData, specularProperty.temperatureData, dTauMoy, albedo here
--
--	specularProperty.temperatureData.directTransmittanceTemperature = temperatureDatabaseParameters->getDirectTransmittanceTemperature();
--
--	double directTransmittance = 1.0;
--	double diffuseTransmittance = 0.5;
--	dTauMoy = (PhaseProperty::computeMeanDirectTransmittance(directTransmittance, listDirections) + diffuseTransmittance) * 0.5;
--	albedo = 0.5;
--}
+ FTFoliar foliarPrecomputing(const PhaseGeneralParametersDTO & genDTO,
+                        const vector<DirectionCartesienne> & listDirections,
+                        const unsigned int & iterationStepTheta,
+@@ -1918,6 +1855,7 @@ void processSurfaceMaterials(	PhaseGeneralParametersDTO & genDTO,
+     processor.registerWriter(phsdata::SurfaceFunction::Type::Hapke2012, std::make_shared<phase::Hapke2012MaterialWriter>(fs, oftw));
+     processor.registerWriter(phsdata::SurfaceFunction::Type::RPV, std::make_shared<phase::RPVMaterialWriter>(fs, oftw));
+     processor.registerWriter(phsdata::SurfaceFunction::Type::Specular, std::make_shared<phase::SpecularMaterialWriter>(fs, oftw));
++    processor.registerWriter(phsdata::SurfaceFunction::Type::Mixed, std::make_shared<phase::MixedMaterialWriter>(processor));
+ 
+     processor.processAll(genDTO, pkmg, outCoeffSpecProperties);
+ }
+diff --git a/Phase/src/PhaseDAO.cpp b/Phase/src/PhaseDAO.cpp
+index 24b909b..0975766 100755
+--- a/Phase/src/PhaseDAO.cpp
++++ b/Phase/src/PhaseDAO.cpp
+@@ -1180,48 +1180,6 @@ bool PhaseDAO::readCoeffDiffParametersForSpecularTauXML(const int & index, doubl
+    return true;
+ }
+ 
+-// Mixed materials
+-bool PhaseDAO::readCoeffDiffParametersForMixedMaterial(unsigned int modelIndex,
+-								std::string & phaseName,
+-								unsigned int & material1Type,
+-								unsigned int & material1Index,
+-								std::string & material1Name,
+-								unsigned int & material2Type,
+-								unsigned int & material2Index,

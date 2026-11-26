@@ -1,100 +1,100 @@
-From fa3117b5843f4795f96feb17927dcb31b90067c2 Mon Sep 17 00:00:00 2001
+From 843f8968eee31d24797b04dfd8f11ae766981d04 Mon Sep 17 00:00:00 2001
 From: Vibe <vibe@localhost>
-Date: Thu, 26 Nov 2026 11:49:21 +0000
-Subject: [PATCH] Convert treatSpecular into phase::SpecularMaterialWriter
- (phsdata::Specular-driven, registered for Type::Specular); delete old
- treatSpecular/computeOpticalPropertiesSpecular; drop RPV copy-paste remnants;
- CONTEXT.md item 29
+Date: Thu, 26 Nov 2026 15:06:13 +0000
+Subject: [PATCH] Add phase::MixedMaterialWriter (treatMixedMaterial
+ replacement); shared static getMaterialName(indexFunction) on all
+ MaterialWriters + SurfaceMaterialProcessor name
+ registry/materialNameFor/surfaceTypeFromXmlType; delete old
+ treatMixedMaterial/getMaterialName/PhaseDAO mixed readers; CONTEXT.md item 31
 
 ---
- CONTEXT.md                                    |  23 +-
- Phase/CMakeLists.txt                          |   1 +
- Phase/include/Phase.hpp                       |  13 -
- .../materials/SpecularMaterialWriter.hpp      |  53 ++++
- Phase/src/Phase.cpp                           | 232 +-----------------
- .../src/materials/SpecularMaterialWriter.cpp  | 218 ++++++++++++++++
- 6 files changed, 295 insertions(+), 245 deletions(-)
- create mode 100644 Phase/include/materials/SpecularMaterialWriter.hpp
- create mode 100644 Phase/src/materials/SpecularMaterialWriter.cpp
+ CONTEXT.md                                    | 17 ++++-
+ Phase/CMakeLists.txt                          |  1 +
+ Phase/include/Phase.hpp                       |  3 -
+ Phase/include/PhaseDAO.hpp                    | 19 -----
+ .../materials/Hapke1981MaterialWriter.hpp     |  4 ++
+ .../materials/Hapke2012MaterialWriter.hpp     |  4 ++
+ .../materials/LambertianMaterialWriter.hpp    |  4 ++
+ .../include/materials/MixedMaterialWriter.hpp | 42 +++++++++++
+ Phase/include/materials/RPVMaterialWriter.hpp |  4 ++
+ .../materials/SpecularMaterialWriter.hpp      |  4 ++
+ .../materials/SurfaceMaterialProcessor.hpp    | 20 +++++++++++
+ Phase/src/Phase.cpp                           | 66 +----------------
+ Phase/src/PhaseDAO.cpp                        | 42 -----------
+ .../src/materials/Hapke1981MaterialWriter.cpp |  6 +-
+ .../src/materials/Hapke2012MaterialWriter.cpp |  6 +-
+ .../materials/LambertianMaterialWriter.cpp    |  6 +-
+ Phase/src/materials/MixedMaterialWriter.cpp   | 71 +++++++++++++++++++
+ Phase/src/materials/RPVMaterialWriter.cpp     |  6 +-
+ .../src/materials/SpecularMaterialWriter.cpp  |  6 +-
+ .../materials/SurfaceMaterialProcessor.cpp    | 42 +++++++++++
+ 20 files changed, 238 insertions(+), 135 deletions(-)
+ create mode 100644 Phase/include/materials/MixedMaterialWriter.hpp
+ create mode 100644 Phase/src/materials/MixedMaterialWriter.cpp
 
 diff --git a/CONTEXT.md b/CONTEXT.md
-index 44bac5d..680d043 100644
+index 15c250b..4fde9d7 100644
 --- a/CONTEXT.md
 +++ b/CONTEXT.md
-@@ -352,6 +352,25 @@ Sandbox notes for rebuilding the prefix (no root available):
-     before too: the only caller lived in the vegetation path, which runs
-     only when vegetation models exist (surfaces are processed after, at
-     Phase.cpp:2141 vs 2084). See the MODULE PROGRESS REPORT TODO.
-+29. treatSpecular converted into phase::SpecularMaterialWriter (this session):
-+    new Phase/include/materials/SpecularMaterialWriter.{hpp,cpp} modeled on
-+    RPVMaterialWriter, registered in processSurfaceMaterials for
-+    phsdata::SurfaceFunction::Type::Specular (specular entries were previously
-+    silently skipped: treatSpecular had no callers). Data now comes from
-+    phsdata::Specular: refractiveIndex databaseName + ni/nt model names,
-+    roughnessFactor, opticalDepth (tau), materialCharacter, OpticalLink (base
-+    BSDF), SpecularNodeMultiplicativeFactorForLUT (ni/nt/opticalDepth/refl/trans
-+    factors). Old treatSpecular + computeOpticalPropertiesSpecular deleted from
-+    Phase.cpp/Phase.hpp. RPV copy-paste remnants dropped: commented writeRPV
-+    call, unused R0/dTauMoy/albedo, v5 updatePropertyForOpticalPropertyInCoeffDiff-
-+    XmlFile call, hardcoded temperature DB, useDirectionalDirectTransmittance
-+    block (the v6 template removed that attribute). OF texture now
-+    "specular<i>OF" via OpticalFactorsTextureWriter (v6 SpecularMultiplicative-
-+    FactorForLUT owns an OpticalFactorMatrix subtree) instead of the v5
-+    Lambertian "l<i>OF" reuse. Emissivity on the extra simulated bands
-+    (Q,U,V / PSI,PSII) is now zero-padded like the other writers (legacy padded
-+    with 1). The "notImpementedYet" base-material literal is kept for output
-+    parity.
+@@ -378,6 +378,19 @@ Sandbox notes for rebuilding the prefix (no root available):
+     (sandbox /workspace+/tmp are ephemeral -- wipeout observed 2026-11-26;
+     the pushed repo is the only durable state, keep changes committed so
+     patches are regenerable).
++31. Mixed material -> phase::MixedMaterialWriter (this session): each
++    MaterialWriter now exposes static getMaterialName(indexFunction) and builds
++    its keyRoot from it, so mixed links can reference the exact LuxCore material
++    name. SurfaceMaterialProcessor gained a per-type name-provider registry
++    (auto-filled by the template registerWriter), surfaceTypeFromXmlType()
++    (XML/globalReferences type -> phsdata Type: 0,2,4,11,13,22,23) and
++    materialNameFor(xmlType, index). MixedMaterialWriter resolves
++    FirstProperty/SecondProperty links through the processor and validates them
++    against genDTO._surfaceMaterials.surfaceOpticalFunctions; volume links exit
++    -6, unknown/unregistered -7 (old code silently wrote "notImplementedYet"
++    for Hapke; Hapke/Hapke2 links now resolve to "Hapke"/"Hapke2_" names).
++    Old treatMixedMaterial + getMaterialName (Phase.cpp/Phase.hpp) and
++    PhaseDAO::readCoeffDiffParametersForMixedMaterial{,XML} deleted.
  
  ## Known TODOs / open points (next sessions)
  
-@@ -403,8 +422,8 @@ Sandbox notes for rebuilding the prefix (no root available):
+@@ -429,8 +442,8 @@ Sandbox notes for rebuilding the prefix (no root available):
    iterations: equivalentFront/BackLambertian live in the slot although they
    are only used within treat() -- could become writer locals.
  - REFACTOR INTO MaterialWriter CLASSES (same pattern as the Lambertian / Hapke
--  / RPV writers): treatSpecular (Phase.cpp:1031), treatPhaseExtern
--  (Phase.cpp:1356), treatMixedMaterial (Phase.cpp:1423).
-+  / RPV writers): treatSpecular DONE (item 29, SpecularMaterialWriter); remaining:
-+  treatPhaseExtern (Phase.cpp), treatMixedMaterial (Phase.cpp).
+-  / RPV writers): treatSpecular DONE (item 29, SpecularMaterialWriter); remaining:
+-  treatPhaseExtern (Phase.cpp), treatMixedMaterial (Phase.cpp).
++  / RPV writers): treatSpecular DONE (item 29), treatMixedMaterial DONE (item 31,
++  MixedMaterialWriter); remaining: treatPhaseExtern (Phase.cpp).
  - DEAD CODE REMOVAL: treatHapke (definition PhaseSurfaces.cpp:10, declaration
    Phase.hpp:305) has NO callers -- Hapke1981MaterialWriter replaced it;
    delete it (also check the treatHapke2 declaration, Phase.hpp:332), then
 diff --git a/Phase/CMakeLists.txt b/Phase/CMakeLists.txt
-index bd263e9..f72fcea 100644
+index f72fcea..1c49ac0 100644
 --- a/Phase/CMakeLists.txt
 +++ b/Phase/CMakeLists.txt
-@@ -23,6 +23,7 @@ add_executable(phase
-    src/materials/Hapke2012MaterialWriter.cpp
+@@ -24,6 +24,7 @@ add_executable(phase
     src/materials/LambertianMaterialWriter.cpp
     src/materials/RPVMaterialWriter.cpp
-+	src/materials/SpecularMaterialWriter.cpp
+    src/materials/SpecularMaterialWriter.cpp
++	src/materials/MixedMaterialWriter.cpp
     src/materials/SurfaceMaterialProcessor.cpp
     src/materials/VegetationMaterialWriter.cpp
     src/opticalfactors/OpticalFactorsTextureWriter.cpp
 diff --git a/Phase/include/Phase.hpp b/Phase/include/Phase.hpp
-index 942035b..57e68bd 100644
+index 57e68bd..6aee929 100644
 --- a/Phase/include/Phase.hpp
 +++ b/Phase/include/Phase.hpp
-@@ -246,19 +246,6 @@ void computeSpecular(	SpecularData & specularProperty,
- void writeSpecular(	SpecularData & specularProperty,
-                std::ofstream & outCoeffSpecProperties,
-                PhaseKeyMappingGenerator & pkmg);
--void treatSpecular(	OpticalPropertyParameters & specularPropertyParameters,
--					unsigned int opIndex,
--					std::vector<int> & useSpectralIrradianceForReflectance,
--					PhaseKeyMappingGenerator & pkmg,
--					std::ofstream & outCoeffSpecProperties,
--					PhaseGeneralParametersDTO & genDTO,
--					const std::vector<DirectionCartesienne> & listDirections);
--void computeOpticalPropertiesSpecular(const unsigned int& spectralBandIndex,
--									OpticalPropertyParameters & specularPropertyParameters,
--									const std::vector<DirectionCartesienne> & listDirections,
--									PropertySpecular & specularProperty,
--									double & albedo,
--									double & dTauMoy);
+@@ -357,9 +357,6 @@ void writeRPV(	PhaseKeyMappingGenerator & pkmg,
+                const unsigned int& modelIndex,
+                const unsigned int& spectralBandIndex);
  
- void processSurfaceMaterials(PhaseGeneralParametersDTO & genDTO,  PhaseKeyMappingGenerator & pkmg, ofstream & outCoeffSpecProperties);
- 
-diff --git a/Phase/include/materials/SpecularMaterialWriter.hpp b/Phase/include/materials/SpecularMaterialWriter.hpp
-new file mode 100644
-index 0000000..6b9a093
---- /dev/null
+-void treatMixedMaterial(PhaseGeneralParametersDTO & genDTO,	unsigned int opIndex, unsigned int pfIndex);
+-std::string getMaterialName(unsigned int modelType, unsigned int modelIndex);
+-
+ /* Foliar */
+ double numberOfAngularSectors(	const vector<DirectionCartesienne> & listDirections,
+                            double & solidAnglesSum);
+diff --git a/Phase/include/PhaseDAO.hpp b/Phase/include/PhaseDAO.hpp
+index 4d40709..7caf821 100644
+--- a/Phase/include/PhaseDAO.hpp
++++ b/Phase/include/PhaseDAO.hpp
+@@ -284,25 +284,6 @@ public:
