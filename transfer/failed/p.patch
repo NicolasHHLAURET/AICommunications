@@ -1,6 +1,6 @@
-From fa3117b5843f4795f96feb17927dcb31b90067c2 Mon Sep 17 00:00:00 2001
+From ce80ef1f026482d406f91c75e2bbe1fb4e131099 Mon Sep 17 00:00:00 2001
 From: Vibe <vibe@localhost>
-Date: Thu, 26 Nov 2026 11:49:21 +0000
+Date: Thu, 26 Nov 2026 12:26:36 +0000
 Subject: [PATCH] Convert treatSpecular into phase::SpecularMaterialWriter
  (phsdata::Specular-driven, registered for Type::Specular); delete old
  treatSpecular/computeOpticalPropertiesSpecular; drop RPV copy-paste remnants;
@@ -153,7 +153,7 @@ index 0000000..6b9a093
 +}
 +
 +#endif /* INCLUDE_MATERIALS_SPECULARMATERIALWRITER_HPP_ */
-+diff --git a/Phase/src/Phase.cpp b/Phase/src/Phase.cpp
+diff --git a/Phase/src/Phase.cpp b/Phase/src/Phase.cpp
 index 3d69455..e5873e5 100755
 --- a/Phase/src/Phase.cpp
 +++ b/Phase/src/Phase.cpp
@@ -168,40 +168,37 @@ index 3d69455..e5873e5 100755
 @@ -1024,236 +1025,6 @@ void cleanAndCreateDirectory(bool isAirFunctionEmpty) {
     removeFile(cleanLib_phase);
  }
- 
--void treatSpecular(	OpticalPropertyParameters & specularPropertyParameters,
-+					unsigned int opIndex,
-+						const vector<bool> & useSpectralIrradianceForReflectance,
-+						PhaseKeyMappingGenerator & pkmg,
-+						ofstream & outCoeffSpecProperties,
-+						PhaseGeneralParametersDTO & genDTO,
-+						const vector<DirectionCartesienne> & listDirections) {
-+
-+	double albedo = 0;
-+	double dTauMoy = 0;
-+
-+	std::string baseMaterial;
-+	double roughness = 0.05;
-+	int materialType = 2;
-+	int baseBSDFType = 0;
-+	int baseBSDFIndex = 0;
-+
-+	vector<double>ni(genDTO.numberOfSpectralBands),nt(genDTO.numberOfSpectralBands),
-+			tau(genDTO.numberOfSpectralBands), refl(genDTO.numberOfSpectralBands), trans(genDTO.numberOfSpectralBands);
-+
-+	for (unsigned int spectralBandIndex = 0; spectralBandIndex < genDTO.numberOfSpectralBands; spectralBandIndex++) {
-+		PropertySpecular specularProperty;
-+
-+		computeOpticalPropertiesSpecular(spectralBandIndex, specularPropertyParameters, listDirections, specularProperty, albedo, dTauMoy);
-+		PhaseDAO::readCoeffDiffParametersForSpecularRoughness(specularPropertyParameters.getModelIndex(), specularProperty.roughness);
-+		PhaseDAO::readCoeffDiffParametersForSpecularMaterial(specularPropertyParameters.getModelIndex(), specularProperty.type, specularProperty.baseBSDF, specularProperty.baseBSDFIndex);
-+
-+		//TODO test albeo
-+		// testSpecularAlbedo(specularPropertyParameters.getModelIndex(), specularProperty);
+-					unsigned int opIndex,
+-						const vector<bool> & useSpectralIrradianceForReflectance,
+-						PhaseKeyMappingGenerator & pkmg,
+-						ofstream & outCoeffSpecProperties,
+-						PhaseGeneralParametersDTO & genDTO,
+-						const vector<DirectionCartesienne> & listDirections) {
+-
+-	double albedo = 0;
+-	double dTauMoy = 0;
+-
+-	std::string baseMaterial;
+-	double roughness = 0.05;
+-	int materialType = 2;
+-	int baseBSDFType = 0;
+-	int baseBSDFIndex = 0;
+-
+-	vector<double>ni(genDTO.numberOfSpectralBands),nt(genDTO.numberOfSpectralBands),
+-			tau(genDTO.numberOfSpectralBands), refl(genDTO.numberOfSpectralBands), trans(genDTO.numberOfSpectralBands);
+-
+-	for (unsigned int spectralBandIndex = 0; spectralBandIndex < genDTO.numberOfSpectralBands; spectralBandIndex++) {
+-		PropertySpecular specularProperty;
+-
+-		computeOpticalPropertiesSpecular(spectralBandIndex, specularPropertyParameters, listDirections, specularProperty, albedo, dTauMoy);
+-		PhaseDAO::readCoeffDiffParametersForSpecularRoughness(specularPropertyParameters.getModelIndex(), specularProperty.roughness);
+-		PhaseDAO::readCoeffDiffParametersForSpecularMaterial(specularPropertyParameters.getModelIndex(), specularProperty.type, specularProperty.baseBSDF, specularProperty.baseBSDFIndex);
+-
+-		//TODO test albeo
+-		// testSpecularAlbedo(specularPropertyParameters.getModelIndex(), specularProperty);
 -
 -		PhaseUtils::updatePropertyForOpticalPropertyInCoeffDiffXmlFile("MultispectralOpticalFunctions.SpecularMultiFunctions.SpecularMulti[",
 -				specularPropertyParameters.getModelIndex(), -1.0, -1.0, -1.0);
--
 -
 -		ni[spectralBandIndex] = specularProperty.ni;
 -		nt[spectralBandIndex] = specularProperty.nt;
@@ -237,7 +234,7 @@ index 3d69455..e5873e5 100755
 -	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "generator", "phase");
 -	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "id", std::to_string(opIndex));
 -
--//			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "temperatureIndex", std::to_string(tmpIndex));
+-	//			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "temperatureIndex", std::to_string(tmpIndex));
 -	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "opIndex", std::to_string(specularPropertyParameters.getModelIndex()));
 -
 -	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "generator", "phase");
@@ -305,7 +302,6 @@ index 3d69455..e5873e5 100755
 -	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "tau", valueTau.str());
 -	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "emission.gain", emissivity.str());
 -
--
 -	if(materialType == 0){ // interface
 -		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "inbounce", "0");
 -		if(roughness < 1e-3){
@@ -333,7 +329,6 @@ index 3d69455..e5873e5 100755
 -		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "baseType", std::to_string(baseBSDFType));
 -		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "baseIndex", std::to_string(baseBSDFIndex));
 -	}
--
 -
 -	OpticalFactorParameters opticalFactorParameters;
 -	if (PhaseDAO::readCoeffDiffParametersForLambertianOpticalFactors(specularPropertyParameters.getModelIndex(), opticalFactorParameters)) {
@@ -426,11 +421,11 @@ index 0000000..76ec54f
 + *      Author: lauretn
 + */
 +
-+#include \"materials/SpecularMaterialWriter.hpp\"
-+#include \"materials/LuxCoreMaterialOutput.hpp\"
++#include "materials/SpecularMaterialWriter.hpp"
++#include "materials/LuxCoreMaterialOutput.hpp"
 +
-+#include \"containers/phaseModel/OpticalPropertyParameters.hpp\"
-+#include \"database/model/RefractiveIndexDatabaseParameters.hpp\"
++#include "containers/phaseModel/OpticalPropertyParameters.hpp"
++#include "database/model/RefractiveIndexDatabaseParameters.hpp"
 +
 +namespace phase {
 +
@@ -447,7 +442,7 @@ index 0000000..76ec54f
 +	}
 +
 +	// The v6 SpecularMulti carries the database name plus the ni/nt model names
-+	// (e.g. \"air\"/\"glass\"); the old v5 DAO read of those names is gone.
++	// (e.g. "air"/"glass"); the old v5 DAO read of those names is gone.
 +	auto refractiveIndexDatabaseParameters = std::make_shared<RefractiveIndexDatabaseParameters>(
 +		*s.databaseName, DartEnv::getDatabasePath(*s.databaseName), s.ni, genDTO.numberOfSpectralBands, true, s.nt);
 +	opticalProperty.addDatabaseToProperty(refractiveIndexDatabaseParameters);
@@ -470,19 +465,19 @@ index 0000000..76ec54f
 +		baseBSDFIndex = s.opticalLink->indexOpticalLink;
 +	}
 +	// Same base-material mapping as the legacy treatSpecular (the
-+	// \"notImpementedYet\" literal is emitted as-is, kept for output parity).
++	// "notImpementedYet" literal is emitted as-is, kept for output parity).
 +	if (baseBSDF == 0) { // lambertian
-+		baseMaterial = \"lambertian\";
++		baseMaterial = "lambertian";
 +	} else if (baseBSDF == 4) { // RPV
-+		baseMaterial = \"RPV\";
++		baseMaterial = "RPV";
 +	} else if (baseBSDF == 2) { // Hapke
-+		baseMaterial = \"notImpementedYet\";
++		baseMaterial = "notImpementedYet";
 +		baseBSDFIndex = 0;
 +	} else if (baseBSDF == 22) { // mixed
-+		baseMaterial = \"notImpementedYet\";
++		baseMaterial = "notImpementedYet";
 +		baseBSDFIndex = 0;
 +	} else {
-+		baseMaterial = \"lambertian\";
++		baseMaterial = "lambertian";
 +		baseBSDFIndex = 0;
 +	}
 +

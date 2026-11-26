@@ -1,0 +1,642 @@
+From fa3117b5843f4795f96feb17927dcb31b90067c2 Mon Sep 17 00:00:00 2001
+From: Vibe <vibe@localhost>
+Date: Thu, 26 Nov 2026 11:49:21 +0000
+Subject: [PATCH] Convert treatSpecular into phase::SpecularMaterialWriter
+ (phsdata::Specular-driven, registered for Type::Specular); delete old
+ treatSpecular/computeOpticalPropertiesSpecular; drop RPV copy-paste remnants;
+ CONTEXT.md item 29
+
+---
+ CONTEXT.md                                    |  23 +-
+ Phase/CMakeLists.txt                          |   1 +
+ Phase/include/Phase.hpp                       |  13 -
+ .../materials/SpecularMaterialWriter.hpp      |  53 ++++
+ Phase/src/Phase.cpp                           | 232 +-----------------
+ .../src/materials/SpecularMaterialWriter.cpp  | 218 ++++++++++++++++
+ 6 files changed, 295 insertions(+), 245 deletions(-)
+ create mode 100644 Phase/include/materials/SpecularMaterialWriter.hpp
+ create mode 100644 Phase/src/materials/SpecularMaterialWriter.cpp
+
+diff --git a/CONTEXT.md b/CONTEXT.md
+index 44bac5d..680d043 100644
+--- a/CONTEXT.md
++++ b/CONTEXT.md
+@@ -352,6 +352,25 @@ Sandbox notes for rebuilding the prefix (no root available):
+     before too: the only caller lived in the vegetation path, which runs
+     only when vegetation models exist (surfaces are processed after, at
+     Phase.cpp:2141 vs 2084). See the MODULE PROGRESS REPORT TODO.
++29. treatSpecular converted into phase::SpecularMaterialWriter (this session):
++    new Phase/include/materials/SpecularMaterialWriter.{hpp,cpp} modeled on
++    RPVMaterialWriter, registered in processSurfaceMaterials for
++    phsdata::SurfaceFunction::Type::Specular (specular entries were previously
++    silently skipped: treatSpecular had no callers). Data now comes from
++    phsdata::Specular: refractiveIndex databaseName + ni/nt model names,
++    roughnessFactor, opticalDepth (tau), materialCharacter, OpticalLink (base
++    BSDF), SpecularNodeMultiplicativeFactorForLUT (ni/nt/opticalDepth/refl/trans
++    factors). Old treatSpecular + computeOpticalPropertiesSpecular deleted from
++    Phase.cpp/Phase.hpp. RPV copy-paste remnants dropped: commented writeRPV
++    call, unused R0/dTauMoy/albedo, v5 updatePropertyForOpticalPropertyInCoeffDiff-
++    XmlFile call, hardcoded temperature DB, useDirectionalDirectTransmittance
++    block (the v6 template removed that attribute). OF texture now
++    "specular<i>OF" via OpticalFactorsTextureWriter (v6 SpecularMultiplicative-
++    FactorForLUT owns an OpticalFactorMatrix subtree) instead of the v5
++    Lambertian "l<i>OF" reuse. Emissivity on the extra simulated bands
++    (Q,U,V / PSI,PSII) is now zero-padded like the other writers (legacy padded
++    with 1). The "notImpementedYet" base-material literal is kept for output
++    parity.
+ 
+ ## Known TODOs / open points (next sessions)
+ 
+@@ -403,8 +422,8 @@ Sandbox notes for rebuilding the prefix (no root available):
+   iterations: equivalentFront/BackLambertian live in the slot although they
+   are only used within treat() -- could become writer locals.
+ - REFACTOR INTO MaterialWriter CLASSES (same pattern as the Lambertian / Hapke
+-  / RPV writers): treatSpecular (Phase.cpp:1031), treatPhaseExtern
+-  (Phase.cpp:1356), treatMixedMaterial (Phase.cpp:1423).
++  / RPV writers): treatSpecular DONE (item 29, SpecularMaterialWriter); remaining:
++  treatPhaseExtern (Phase.cpp), treatMixedMaterial (Phase.cpp).
+ - DEAD CODE REMOVAL: treatHapke (definition PhaseSurfaces.cpp:10, declaration
+   Phase.hpp:305) has NO callers -- Hapke1981MaterialWriter replaced it;
+   delete it (also check the treatHapke2 declaration, Phase.hpp:332), then
+diff --git a/Phase/CMakeLists.txt b/Phase/CMakeLists.txt
+index bd263e9..f72fcea 100644
+--- a/Phase/CMakeLists.txt
++++ b/Phase/CMakeLists.txt
+@@ -23,6 +23,7 @@ add_executable(phase
+    src/materials/Hapke2012MaterialWriter.cpp
+    src/materials/LambertianMaterialWriter.cpp
+    src/materials/RPVMaterialWriter.cpp
++	src/materials/SpecularMaterialWriter.cpp
+    src/materials/SurfaceMaterialProcessor.cpp
+    src/materials/VegetationMaterialWriter.cpp
+    src/opticalfactors/OpticalFactorsTextureWriter.cpp
+diff --git a/Phase/include/Phase.hpp b/Phase/include/Phase.hpp
+index 942035b..57e68bd 100644
+--- a/Phase/include/Phase.hpp
++++ b/Phase/include/Phase.hpp
+@@ -246,19 +246,6 @@ void computeSpecular(	SpecularData & specularProperty,
+ void writeSpecular(	SpecularData & specularProperty,
+                std::ofstream & outCoeffSpecProperties,
+                PhaseKeyMappingGenerator & pkmg);
+-void treatSpecular(	OpticalPropertyParameters & specularPropertyParameters,
+-					unsigned int opIndex,
+-					std::vector<int> & useSpectralIrradianceForReflectance,
+-					PhaseKeyMappingGenerator & pkmg,
+-					std::ofstream & outCoeffSpecProperties,
+-					PhaseGeneralParametersDTO & genDTO,
+-					const std::vector<DirectionCartesienne> & listDirections);
+-void computeOpticalPropertiesSpecular(const unsigned int& spectralBandIndex,
+-									OpticalPropertyParameters & specularPropertyParameters,
+-									const std::vector<DirectionCartesienne> & listDirections,
+-									PropertySpecular & specularProperty,
+-									double & albedo,
+-									double & dTauMoy);
+ 
+ void processSurfaceMaterials(PhaseGeneralParametersDTO & genDTO,  PhaseKeyMappingGenerator & pkmg, ofstream & outCoeffSpecProperties);
+ 
+diff --git a/Phase/include/materials/SpecularMaterialWriter.hpp b/Phase/include/materials/SpecularMaterialWriter.hpp
+new file mode 100644
+index 0000000..6b9a093
+--- /dev/null
++++ b/Phase/include/materials/SpecularMaterialWriter.hpp
+@@ -0,0 +1,53 @@
++/*
++ * SpecularMaterialWriter.hpp
++ *
++ *  Created on: 26 nov. 2026
++ *      Author: lauretn
++ */
++
++#ifndef INCLUDE_MATERIALS_SPECULARMATERIALWRITER_HPP_
++#define INCLUDE_MATERIALS_SPECULARMATERIALWRITER_HPP_
++
++#include "PhaseDTOs.hpp"
++#include "../../librairieDart/include/mapping/PhaseKeyMappingGenerator.hpp"
++#include "PhaseProperty.hpp"
++#include "opticalfactors/OpticalFactorsTextureWriter.hpp"
++#include "fluorescence/FluorescenceMatrices.hpp"
++#include "PhaseStructure.hpp"
++
++namespace phase {
++class SpecularMaterialWriter {
++public:
++	SpecularMaterialWriter(	const FluorescenceService & fluorescenceService,
++							const OpticalFactorsTextureWriter & opticalFactorsWriter);
++
++	bool treat(	const phsdata::SurfaceFunction & sf,
++				PhaseGeneralParametersDTO & genDTO,
++				const std::vector<bool> & useSpectralIrradianceForReflectance,
++				unsigned int materialIndex,
++				PhaseKeyMappingGenerator & pkmg,
++				std::ofstream & outCoeffSpecProperties) const;
++
++	void writeLuxCoreMaterial(	const phsdata::Specular & s,
++								PhaseGeneralParametersDTO & genDTO,
++								const std::vector<PropertySpecular> & properties,
++								const std::string & baseMaterial,
++								unsigned int materialID) const;
++
++private:
++	// --- pipeline steps (private, in call order) ---
++	bool prepareDatabase(	const phsdata::Specular & s,
++							const PhaseGeneralParametersDTO & genDTO,
++							OpticalPropertyParameters & opticalProperty) const;
++
++	void applyMultiplicativeFactors(const phsdata::Specular & s,
++									OpticalPropertyParameters & opticalProperty,
++									std::vector<PropertySpecular> & properties,
++									std::string & baseMaterial) const;
++
++	const FluorescenceService & _fluorescenceService;
++	const OpticalFactorsTextureWriter & _opticalFactorsWriter;
++};
++}
++
++#endif /* INCLUDE_MATERIALS_SPECULARMATERIALWRITER_HPP_ */
++diff --git a/Phase/src/Phase.cpp b/Phase/src/Phase.cpp
+index 3d69455..e5873e5 100755
+--- a/Phase/src/Phase.cpp
++++ b/Phase/src/Phase.cpp
+@@ -106,6 +106,7 @@ extern "C" int sqlite3_initialize(void);
+ #include "materials/Hapke1981MaterialWriter.hpp"
+ #include "materials/Hapke2012MaterialWriter.hpp"
+ #include "materials/RPVMaterialWriter.hpp"
++#include "materials/SpecularMaterialWriter.hpp"
+ #include "materials/VegetationMaterialWriter.hpp"
+ 
+ //----------------------------------------------------------------------------------------
+@@ -1024,236 +1025,6 @@ void cleanAndCreateDirectory(bool isAirFunctionEmpty) {
+    removeFile(cleanLib_phase);
+ }
+ 
+-void treatSpecular(	OpticalPropertyParameters & specularPropertyParameters,
++					unsigned int opIndex,
++						const vector<bool> & useSpectralIrradianceForReflectance,
++						PhaseKeyMappingGenerator & pkmg,
++						ofstream & outCoeffSpecProperties,
++						PhaseGeneralParametersDTO & genDTO,
++						const vector<DirectionCartesienne> & listDirections) {
++
++	double albedo = 0;
++	double dTauMoy = 0;
++
++	std::string baseMaterial;
++	double roughness = 0.05;
++	int materialType = 2;
++	int baseBSDFType = 0;
++	int baseBSDFIndex = 0;
++
++	vector<double>ni(genDTO.numberOfSpectralBands),nt(genDTO.numberOfSpectralBands),
++			tau(genDTO.numberOfSpectralBands), refl(genDTO.numberOfSpectralBands), trans(genDTO.numberOfSpectralBands);
++
++	for (unsigned int spectralBandIndex = 0; spectralBandIndex < genDTO.numberOfSpectralBands; spectralBandIndex++) {
++		PropertySpecular specularProperty;
++
++		computeOpticalPropertiesSpecular(spectralBandIndex, specularPropertyParameters, listDirections, specularProperty, albedo, dTauMoy);
++		PhaseDAO::readCoeffDiffParametersForSpecularRoughness(specularPropertyParameters.getModelIndex(), specularProperty.roughness);
++		PhaseDAO::readCoeffDiffParametersForSpecularMaterial(specularPropertyParameters.getModelIndex(), specularProperty.type, specularProperty.baseBSDF, specularProperty.baseBSDFIndex);
++
++		//TODO test albeo
++		// testSpecularAlbedo(specularPropertyParameters.getModelIndex(), specularProperty);
+-
+-		PhaseUtils::updatePropertyForOpticalPropertyInCoeffDiffXmlFile("MultispectralOpticalFunctions.SpecularMultiFunctions.SpecularMulti[",
+-				specularPropertyParameters.getModelIndex(), -1.0, -1.0, -1.0);
+-
+-
+-		ni[spectralBandIndex] = specularProperty.ni;
+-		nt[spectralBandIndex] = specularProperty.nt;
+-		tau[spectralBandIndex] = specularProperty.tau;
+-		refl[spectralBandIndex] = specularProperty.intensityR;
+-		trans[spectralBandIndex] = specularProperty.intensityT;
+-		roughness = specularProperty.roughness;
+-		materialType = specularProperty.type;
+-
+-		if(specularProperty.baseBSDF == 0){// lambertian
+-			baseMaterial = "lambertian";
+-		}else if(specularProperty.baseBSDF == 4){ //RPV
+-			baseMaterial = "RPV";
+-		}else if(specularProperty.baseBSDF == 2){ // Hapke
+-			baseMaterial = "notImpementedYet";
+-			specularProperty.baseBSDFIndex = 0;
+-		}else if(specularProperty.baseBSDF == 22){ // mixed
+-			baseMaterial = "notImpementedYet";
+-			specularProperty.baseBSDFIndex = 0;
+-		}else{
+-			baseMaterial = "lambertian";
+-			specularProperty.baseBSDFIndex = 0;
+-		}
+-		baseBSDFType = specularProperty.baseBSDF;
+-		baseBSDFIndex = specularProperty.baseBSDFIndex;
+-		//TODO write down specular information
+-//		writeRPV(pkmg, outCoeffSpecProperties, rpvProperty, rpvPropertyParameters.getModelName(), dTauMoy, rpvPropertyParameters.getModelIndex(),
+-//				spectralBandIndex);
+-	}
+-
+-	std::ostringstream keyRoot;
+-	keyRoot << "scene.materials." << "specular" <<  specularPropertyParameters.getModelIndex() /*<< "_" << tmpIndex*/ << ".";
+-	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "generator", "phase");
+-	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "id", std::to_string(opIndex));
+-
+-//			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "temperatureIndex", std::to_string(tmpIndex));
+-	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "opIndex", std::to_string(specularPropertyParameters.getModelIndex()));
+-
+-	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "generator", "phase");
+-
+-	std::ostringstream valueNi,valueNt,valueR,valueT, valueTau, emissivity;
+-	valueNi << setprecision(15);
+-	valueNt << setprecision(15);
+-	valueR << setprecision(15);
+-	valueT << setprecision(15); // named H in DART-FT while it name Rc in RAMI definition
+-	valueTau << setprecision(15);
+-	emissivity << setprecision(15);
+-
+-	valueNi << ni[0]; valueNt<<nt[0]; valueR<<refl[0]; valueT<<trans[0]; valueTau<<tau[0];
+-	double R0 = (nt[0] - ni[0])/(nt[0] + ni[0]);
+-	R0 *= R0; // nadir incidence
+-
+-	emissivity << 1.; // Force emissivity to 1, the real emissivity is computed in dart
+-
+-	for (unsigned int spectralBandIndex = 1; spectralBandIndex < genDTO.numberOfSpectralBands; spectralBandIndex++) {
+-		valueNi << " " << ni[spectralBandIndex]; valueNt << " " << nt[spectralBandIndex];
+-		valueR << " " << refl[spectralBandIndex]; valueT << " " << trans[spectralBandIndex];
+-		valueTau<< " " << tau[spectralBandIndex];
+-		R0 = (nt[spectralBandIndex] - ni[spectralBandIndex])/(nt[spectralBandIndex] + ni[spectralBandIndex]);
+-		R0 *= R0; // nadir incidence
+-		emissivity << " " << 1.; // Force emissivity to 1, the real emissivity is computed in dart
+-	}
+-
+-	if (specularPropertyParameters.useDirectionalDirectTransmittance()) {
+-		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "transparency.angularStep", std::to_string(specularPropertyParameters._angularStep));
+-		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "transparency.directionalFile", specularPropertyParameters._ddtFilePath);
+-	}
+-
+-	if (PhaseProperty::getPolarization()) {
+-		// 3 * numberOfSpectralBands are added to simulate Q, U, V
+-		// The optical properties are repeated in these bands
+-		for (unsigned int stokesCompoent = 0; stokesCompoent < 3; ++stokesCompoent) {
+-			for (unsigned int spectralBandIndex = 0; spectralBandIndex < genDTO.numberOfSpectralBands; spectralBandIndex++) {
+-				valueNi << " " << ni[spectralBandIndex]; valueNt << " " << nt[spectralBandIndex];
+-				valueR << " " << refl[spectralBandIndex]; valueT << " " << trans[spectralBandIndex];
+-				valueTau<< " " << tau[spectralBandIndex];
+-				R0 = (1 - nt[spectralBandIndex]/ni[spectralBandIndex])/(1 + nt[spectralBandIndex]/ni[spectralBandIndex]); // nadir incidence
+-				emissivity << " " << 1.;
+-			}
+-		}
+-	}
+-
+-	if (PhaseProperty::getFluorescence()) {
+-		// 2 * numberOfSpectralBands are added to simulate PSI and PSII
+-		// The optical properties are repeated in these bands
+-		for (unsigned int photoSystemIndex = 0; photoSystemIndex < 2; ++photoSystemIndex) {
+-			for (unsigned int spectralBandIndex = 0; spectralBandIndex < genDTO.numberOfSpectralBands; spectralBandIndex++) {
+-				valueNi << " " << ni[spectralBandIndex]; valueNt << " " << nt[spectralBandIndex];
+-				valueR << " " << refl[spectralBandIndex]; valueT << " " << trans[spectralBandIndex];
+-				valueTau<< " " << tau[spectralBandIndex];
+-				R0 = (1 - nt[spectralBandIndex]/ni[spectralBandIndex])/(1 + nt[spectralBandIndex]/ni[spectralBandIndex]); // nadir incidence
+-				emissivity << " " << 1.;
+-			}
+-		}
+-	}
+-
+-	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "ni", valueNi.str());
+-	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "nt", valueNt.str());
+-	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "kr", valueR.str());
+-	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "kt", valueT.str());
+-	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "tau", valueTau.str());
+-	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "emission.gain", emissivity.str());
+-
+-
+-	if(materialType == 0){ // interface
+-		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "inbounce", "0");
+-		if(roughness < 1e-3){
+-			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "type", "specular");
+-		}else{
+-			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "type", "glossy");
+-			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "roughness", std::to_string(roughness));
+-		}
+-	}else if(materialType == 1){ // thin layer
+-		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "inbounce", "1");
+-		if(roughness < 1e-3){
+-			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "type", "specular");
+-		}else{
+-			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "type", "glossy");
+-			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "roughness", std::to_string(roughness));
+-		}
+-	}else if(materialType == 2){ // glossy coating + diffuse base
+-		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "type", "glossydiffuse");
+-		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "roughness", std::to_string(roughness));
+-		std::ostringstream baseMat;
+-		baseMat << baseMaterial << baseBSDFIndex /*<< "_" << tmpIndex*/;
+-
+-		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "base", baseMat.str());
+-
+-		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "baseType", std::to_string(baseBSDFType));
+-		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "baseIndex", std::to_string(baseBSDFIndex));
+-	}
+-
+-
+-	OpticalFactorParameters opticalFactorParameters;
+-	if (PhaseDAO::readCoeffDiffParametersForLambertianOpticalFactors(specularPropertyParameters.getModelIndex(), opticalFactorParameters)) {
+-		std::string textureName = "l" + boost::lexical_cast<std::string>(specularPropertyParameters.getModelIndex()) + "OF";
+-		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot.str() + "opticalFactors", textureName);
+-
+-		std::string textureKeyRoot = "scene.textures." + textureName;
+-		genDTO.luxCoreRenderSceneProperties.ajouterCle(textureKeyRoot + ".type", "opticalFactors");
+-		genDTO.luxCoreRenderSceneProperties.ajouterCle(textureKeyRoot + ".file", textureName + ".bin");
+-		genDTO.luxCoreRenderSceneProperties.ajouterCle(textureKeyRoot + ".generator", "phase");
+-
+-		if (opticalFactorParameters.sameOpticalFactorForAllBands) {
+-			genDTO.luxCoreRenderSceneProperties.ajouterCle(textureKeyRoot + ".inputs", opticalFactorParameters.fileNames[0]);
+-			genDTO.luxCoreRenderSceneProperties.ajouterCle(textureKeyRoot + ".inputsDuplication", opticalFactorParameters.duplicateFirstLayer[0] ? "1" : "0");
+-		} else {
+-			std::ostringstream inputsOSS, duplicationOSS;
+-			inputsOSS << opticalFactorParameters.fileNames[0];
+-			duplicationOSS << opticalFactorParameters.duplicateFirstLayer[0];
+-			for (unsigned int spectralBandIndex = 1; spectralBandIndex < genDTO.numberOfSpectralBands; spectralBandIndex++) {
+-				inputsOSS << ";" << (opticalFactorParameters.fileNames[spectralBandIndex] == "" ? "1" : opticalFactorParameters.fileNames[spectralBandIndex]);
+-				duplicationOSS << ";" << (opticalFactorParameters.duplicateFirstLayer[spectralBandIndex] ? "1" : "0");
+-			}
+-			genDTO.luxCoreRenderSceneProperties.ajouterCle(textureKeyRoot + ".inputs", inputsOSS.str());
+-			genDTO.luxCoreRenderSceneProperties.ajouterCle(textureKeyRoot + ".inputsDuplication", duplicationOSS.str());
+-		}
+-	}
+-}
+-
+-
+-void computeOpticalPropertiesSpecular(const unsigned int& spectralBandIndex,
+-									OpticalPropertyParameters & specularPropertyParameters,
+-									const vector<DirectionCartesienne> & listDirections,
+-									PropertySpecular & specularProperty,
+-									double & dTauMoy,
+-									double & albedo) {
+-
+-	shared_ptr<RefractiveIndexDatabaseParameters> refractiveIndexDatabaseParameters = ::static_pointer_cast<RefractiveIndexDatabaseParameters>(
+-			specularPropertyParameters.getDatabaseParameters(REFRACTIVEINDEX_DATABASE));
+-
+-	shared_ptr<PhaseTemperatureDatabaseParameters> temperatureDatabaseParameters = ::static_pointer_cast<PhaseTemperatureDatabaseParameters>(
+-			specularPropertyParameters.getDatabaseParameters(TEMPERATURE_DATABASE));
+-	shared_ptr<TransmittanceDatabaseParameters> transmittanceParameters = ::static_pointer_cast<TransmittanceDatabaseParameters>(
+-			specularPropertyParameters.getDatabaseParameters(TRANSMITTANCE_DATABASE));
+-
+-	unsigned int modelIndex = specularPropertyParameters.getModelIndex();
+-
+-	specularProperty.ni = refractiveIndexDatabaseParameters.get()->getRefractionIndex(spectralBandIndex)
+-			* PhaseProperty::getMultiplicativeFactorNiForSpecular(modelIndex, spectralBandIndex);
+-
+-	specularProperty.nt = refractiveIndexDatabaseParameters.get()->getRefractionIndex2(spectralBandIndex)
+-			* PhaseProperty::getMultiplicativeFactorNtForSpecular(modelIndex, spectralBandIndex);
+-
+-	PhaseDAO::readCoeffDiffParametersForSpecularTau(specularPropertyParameters.getModelIndex(), specularProperty.tau);
+-	specularProperty.tau = specularProperty.tau * PhaseProperty::getMultiplicativeFactorTauForSpecular(modelIndex, spectralBandIndex);
+-
+-	specularProperty.intensityR = PhaseProperty::getMultiplicativeFactorReflectionForSpecular(modelIndex, spectralBandIndex);
+-	specularProperty.intensityT = PhaseProperty::getMultiplicativeFactorTransmissionForSpecular(modelIndex, spectralBandIndex);
+-
+-	// TODO I need to compute the specularProperty.specularData, specularProperty.temperatureData, dTauMoy, albedo here
+-
+-	specularProperty.temperatureData.directTransmittanceTemperature = temperatureDatabaseParameters->getDirectTransmittanceTemperature();
+-
+-	double directTransmittance = 1.0;
+-	double diffuseTransmittance = 0.5;
+-	dTauMoy = (PhaseProperty::computeMeanDirectTransmittance(directTransmittance, listDirections) + diffuseTransmittance) * 0.5;
+-	albedo = 0.5;
+-}
+-
+ void computeSpecular(	SpecularData & specularProperty,
+                        const double & specularIntensity,
+                        const unsigned int & spectralBandIndex,
+@@ -2146,6 +1917,7 @@ void processSurfaceMaterials(	PhaseGeneralParametersDTO & genDTO,
+     processor.registerWriter(phsdata::SurfaceFunction::Type::Hapke1981, std::make_shared<phase::Hapke1981MaterialWriter>(fs, oftw));
+     processor.registerWriter(phsdata::SurfaceFunction::Type::Hapke2012, std::make_shared<phase::Hapke2012MaterialWriter>(fs, oftw));
+     processor.registerWriter(phsdata::SurfaceFunction::Type::RPV, std::make_shared<phase::RPVMaterialWriter>(fs, oftw));
++    processor.registerWriter(phsdata::SurfaceFunction::Type::Specular, std::make_shared<phase::SpecularMaterialWriter>(fs, oftw));
+ 
+     processor.processAll(genDTO, pkmg, outCoeffSpecProperties);
+ }
+diff --git a/Phase/src/materials/SpecularMaterialWriter.cpp b/Phase/src/materials/SpecularMaterialWriter.cpp
+new file mode 100644
+index 0000000..76ec54f
+--- /dev/null
++++ b/Phase/src/materials/SpecularMaterialWriter.cpp
+@@ -0,0 +1,218 @@
++/*
++ * SpecularMaterialWriter.cpp
++ *
++ *  Created on: 26 nov. 2026
++ *      Author: lauretn
++ */
++
++#include \"materials/SpecularMaterialWriter.hpp\"
++#include \"materials/LuxCoreMaterialOutput.hpp\"
++
++#include \"containers/phaseModel/OpticalPropertyParameters.hpp\"
++#include \"database/model/RefractiveIndexDatabaseParameters.hpp\"
++
++namespace phase {
++
++SpecularMaterialWriter::SpecularMaterialWriter(	const FluorescenceService & fluorescenceService,
++												const OpticalFactorsTextureWriter & opticalFactorsWriter) :
++	_fluorescenceService(fluorescenceService), _opticalFactorsWriter(opticalFactorsWriter) {}
++
++bool SpecularMaterialWriter::prepareDatabase(const phsdata::Specular & s,
++											 const PhaseGeneralParametersDTO & genDTO,
++											 OpticalPropertyParameters & opticalProperty) const {
++	if (!s.databaseName.is_initialized()) {
++		// No refractive-index database defined: nothing to process.
++		return false;
++	}
++
++	// The v6 SpecularMulti carries the database name plus the ni/nt model names
++	// (e.g. \"air\"/\"glass\"); the old v5 DAO read of those names is gone.
++	auto refractiveIndexDatabaseParameters = std::make_shared<RefractiveIndexDatabaseParameters>(
++		*s.databaseName, DartEnv::getDatabasePath(*s.databaseName), s.ni, genDTO.numberOfSpectralBands, true, s.nt);
++	opticalProperty.addDatabaseToProperty(refractiveIndexDatabaseParameters);
++	return true;
++}
++
++void SpecularMaterialWriter::applyMultiplicativeFactors(const phsdata::Specular & s,
++														OpticalPropertyParameters & opticalProperty,
++														std::vector<PropertySpecular> & properties,
++														std::string & baseMaterial) const {
++	auto refractiveIndexDatabaseParameters = std::static_pointer_cast<RefractiveIndexDatabaseParameters>(
++		opticalProperty.getDatabaseParameters(REFRACTIVEINDEX_DATABASE));
++
++	// materialCharacter==2 (glossy coating + diffuse base) links the base BSDF
++	// through OpticalLink; the other characters have no base.
++	int baseBSDF = 0;
++	int baseBSDFIndex = 0;
++	if (s.materialCharacter == 2 && s.opticalLink.is_initialized()) {
++		baseBSDF = s.opticalLink->typeOpticalLink;
++		baseBSDFIndex = s.opticalLink->indexOpticalLink;
++	}
++	// Same base-material mapping as the legacy treatSpecular (the
++	// \"notImpementedYet\" literal is emitted as-is, kept for output parity).
++	if (baseBSDF == 0) { // lambertian
++		baseMaterial = \"lambertian\";
++	} else if (baseBSDF == 4) { // RPV
++		baseMaterial = \"RPV\";
++	} else if (baseBSDF == 2) { // Hapke
++		baseMaterial = \"notImpementedYet\";
++		baseBSDFIndex = 0;
++	} else if (baseBSDF == 22) { // mixed
++		baseMaterial = \"notImpementedYet\";
++		baseBSDFIndex = 0;
++	} else {
++		baseMaterial = \"lambertian\";
++		baseBSDFIndex = 0;
++	}
++
++	for (unsigned int sbi = 0; sbi < properties.size(); ++sbi) {
++		properties[sbi].ni = refractiveIndexDatabaseParameters->getRefractionIndex(sbi);
++		properties[sbi].nt = refractiveIndexDatabaseParameters->getRefractionIndex2(sbi);
++		// opticalDepth plays the role of the old per-model tau.
++		properties[sbi].tau = s.opticalDepth;
++		// No database for the intensities: the multiplicative factors are the values.
++		properties[sbi].intensityR = 1.;
++		properties[sbi].intensityT = 1.;
++		properties[sbi].roughness = s.roughnessFactor;
++		properties[sbi].type = s.materialCharacter;
++		properties[sbi].baseBSDF = baseBSDF;
++		properties[sbi].baseBSDFIndex = baseBSDFIndex;
++	}
++
++	if (s.nodeMultiplicativeFactor.is_initialized()) {
++		// Same XML semantics as the other materials: `factors` always contains exactly
++		// one SpecularMultiplicativeFactorForLUT per spectral band.
++		const phsdata::MultiplicativeFactorList & mfl = *s.nodeMultiplicativeFactor;
++		for (unsigned int sbi = 0; sbi < properties.size() && sbi < mfl.factors.size(); ++sbi) {
++			auto smf = std::static_pointer_cast<const phsdata::SpecularMultiplicativeFactor>(mfl.factors[sbi]);
++			properties[sbi].ni *= smf->niFactor;
++			properties[sbi].nt *= smf->ntFactor;
++			properties[sbi].tau *= smf->opticalDepthFactor;
++			properties[sbi].intensityR *= smf->reflectionIntensityFactor;
++			properties[sbi].intensityT *= smf->transmissionIntensityFactor;
++		}
++	}
++}
++
++bool SpecularMaterialWriter::treat(const phsdata::SurfaceFunction & sf,
++								   PhaseGeneralParametersDTO & genDTO,
++								   const std::vector<bool> & useSpectralIrradianceForReflectance,
++								   unsigned int materialIndex,
++								   PhaseKeyMappingGenerator & pkmg,
++								   std::ofstream & outCoeffSpecProperties) const {
++	const phsdata::Specular & s = dynamic_cast<const phsdata::Specular &>(sf);
++	OpticalPropertyParameters opticalProperty(SPECULAR_PROPERTY, s.indexFunction, s.functionName);
++	if (!prepareDatabase(s, genDTO, opticalProperty))
++		return false;
++
++	for (unsigned int i = 0; i < opticalProperty.getNbDatabaseForProperty(); ++i)
++		PhaseProperty::readReflectanceParameters(useSpectralIrradianceForReflectance, opticalProperty.getDatabaseForProperty(i));
++
++	std::vector<PropertySpecular> properties(genDTO.numberOfSpectralBands);
++	std::string baseMaterial;
++	applyMultiplicativeFactors(s, opticalProperty, properties, baseMaterial);
++
++	writeLuxCoreMaterial(s, genDTO, properties, baseMaterial, materialIndex);
++	return true;
++}
++
++void SpecularMaterialWriter::writeLuxCoreMaterial(const phsdata::Specular & s,
++												  PhaseGeneralParametersDTO & genDTO,
++												  const std::vector<PropertySpecular> & properties,
++												  const std::string & baseMaterial,
++												  unsigned int materialID) const {
++	const unsigned int nbBands = genDTO.numberOfSpectralBands;
++	const std::string keyRoot = "scene.materials.specular" + std::to_string(s.indexFunction) + ".";
++	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "generator", "phase");
++	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "id", std::to_string(materialID));
++	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "opIndex", std::to_string(s.indexFunction));
++
++	auto niValue = [&properties](unsigned int sbi) { return properties[sbi].ni; };
++	auto ntValue = [&properties](unsigned int sbi) { return properties[sbi].nt; };
++	auto krValue = [&properties](unsigned int sbi) { return properties[sbi].intensityR; };
++	auto ktValue = [&properties](unsigned int sbi) { return properties[sbi].intensityT; };
++	auto tauValue = [&properties](unsigned int sbi) { return properties[sbi].tau; };
++
++	std::ostringstream valueNi, valueNt, valueR, valueT, valueTau, emissivity;
++	valueNi << setprecision(15);
++	valueNi << niValue(0);
++	luxcore::appendPerBandDuplicated(valueNi, nbBands, niValue);
++
++	valueNt << setprecision(15);
++	valueNt << ntValue(0);
++	luxcore::appendPerBandDuplicated(valueNt, nbBands, ntValue);
++
++	valueR << setprecision(15);
++	valueR << krValue(0);
++	luxcore::appendPerBandDuplicated(valueR, nbBands, krValue);
++
++	valueT << setprecision(15);
++	valueT << ktValue(0);
++	luxcore::appendPerBandDuplicated(valueT, nbBands, ktValue);
++
++	valueTau << setprecision(15);
++	valueTau << tauValue(0);
++	luxcore::appendPerBandDuplicated(valueTau, nbBands, tauValue);
++
++	// Emissivity is forced to 1 (the real emissivity is computed in DART); it is zero for the extra simulated bands (Q,U,V and PSI,PSII).
++	emissivity << setprecision(15);
++	emissivity << 1.;
++	luxcore::appendPerBandZeroPadded(emissivity, nbBands, [](unsigned int) { return 1.; });
++
++	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "ni", valueNi.str());
++	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "nt", valueNt.str());
++	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "kr", valueR.str());
++	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "kt", valueT.str());
++	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "tau", valueTau.str());
++	genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "emission.gain", emissivity.str());
++
++	// roughness / material type are band-independent in the v6 XML.
++	const double roughness = properties[0].roughness;
++	const int materialType = properties[0].type;
++
++	if (materialType == 0) { // interface
++		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "inbounce", "0");
++		if (roughness < 1e-3) {
++			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "type", "specular");
++		} else {
++			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "type", "glossy");
++			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "roughness", std::to_string(roughness));
++		}
++	} else if (materialType == 1) { // thin layer
++		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "inbounce", "1");
++		if (roughness < 1e-3) {
++			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "type", "specular");
++		} else {
++			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "type", "glossy");
++			genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "roughness", std::to_string(roughness));
++		}
++	} else if (materialType == 2) { // glossy coating + diffuse base
++		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "type", "glossydiffuse");
++		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "roughness", std::to_string(roughness));
++		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "base", baseMaterial + std::to_string(properties[0].baseBSDFIndex));
++		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "baseType", std::to_string(properties[0].baseBSDF));
++		genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "baseIndex", std::to_string(properties[0].baseBSDFIndex));
++	}
++
++	if (s.nodeMultiplicativeFactor.is_initialized()) {
++		const phsdata::MultiplicativeFactorList & mfl = *s.nodeMultiplicativeFactor;
++		bool useOpticalFactorMatrix = mfl.useSameOpticalFactorMatrixForAllBands && mfl.bandCommonOpticalFactors.is_initialized();
++		if (!useOpticalFactorMatrix) {
++			const unsigned int nbFactors = std::min<unsigned int>(nbBands, mfl.factors.size());
++			for (unsigned int sbi = 0; sbi < nbFactors && !useOpticalFactorMatrix; sbi++)
++				useOpticalFactorMatrix = mfl.factors[sbi]->useOpticalFactorMatrix && mfl.factors[sbi]->opticalFactorMatrix.is_initialized();
++		}
++
++		if (useOpticalFactorMatrix) {
++			// "specular" prefix: the legacy code reused the Lambertian "l" prefix, risking
++			// name collisions with Lambertian-generated optical factors.
++			const std::string textureName = "specular" + std::to_string(s.indexFunction) + "OF";
++			const boost::filesystem::path outputDir = boost::filesystem::path(DartEnv::getCurrentSimulationOutputPath()) / PhaseUtils::getOutputFolder();
++			if (outputDir.empty())
++				throw std::runtime_error("Output directory path is empty");
++			if (_opticalFactorsWriter.writeTexture(genDTO, textureName, mfl, outputDir.string()))
++				genDTO.luxCoreRenderSceneProperties.ajouterCle(keyRoot + "opticalFactors", textureName);
++		}
++	}
++}
++}
+-- 
+2.47.3
+
