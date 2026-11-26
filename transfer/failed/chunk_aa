@@ -1,100 +1,100 @@
-From d06ae320523f63e4c3589af96fdfe5a223511e14 Mon Sep 17 00:00:00 2001
+From fa3117b5843f4795f96feb17927dcb31b90067c2 Mon Sep 17 00:00:00 2001
 From: Vibe <vibe@localhost>
-Date: Wed, 25 Nov 2026 15:13:39 +0000
-Subject: [PATCH] Move writer-only free foliar helpers from
- Phase.hpp/Phase.cpp/PhaseVegetation.cpp into VegetationMaterialWriter.cpp as
- statics; drop dead computeAverageEta/writeFoliar decls; CONTEXT.md item 27
+Date: Thu, 26 Nov 2026 11:49:21 +0000
+Subject: [PATCH] Convert treatSpecular into phase::SpecularMaterialWriter
+ (phsdata::Specular-driven, registered for Type::Specular); delete old
+ treatSpecular/computeOpticalPropertiesSpecular; drop RPV copy-paste remnants;
+ CONTEXT.md item 29
 
 ---
- CONTEXT.md                                    |  17 +
- Phase/include/Phase.hpp                       |  37 ---
- Phase/src/Phase.cpp                           | 202 ------------
- Phase/src/PhaseVegetation.cpp                 |  89 ------
- .../materials/VegetationMaterialWriter.cpp    | 291 +++++++++++++++++++
- 5 files changed, 308 insertions(+), 328 deletions(-)
+ CONTEXT.md                                    |  23 +-
+ Phase/CMakeLists.txt                          |   1 +
+ Phase/include/Phase.hpp                       |  13 -
+ .../materials/SpecularMaterialWriter.hpp      |  53 ++++
+ Phase/src/Phase.cpp                           | 232 +-----------------
+ .../src/materials/SpecularMaterialWriter.cpp  | 218 ++++++++++++++++
+ 6 files changed, 295 insertions(+), 245 deletions(-)
+ create mode 100644 Phase/include/materials/SpecularMaterialWriter.hpp
+ create mode 100644 Phase/src/materials/SpecularMaterialWriter.cpp
 
 diff --git a/CONTEXT.md b/CONTEXT.md
-index 1ce42cc..2f42b06 100644
+index 44bac5d..680d043 100644
 --- a/CONTEXT.md
 +++ b/CONTEXT.md
-@@ -326,6 +326,23 @@ Sandbox notes for rebuilding the prefix (no root available):
-     recorded as "OWNER: confirm" in item 9. Regression vs PhaseOld, now
-     fixed, in 3 cases that used to sun-weight foliar reflectance anyway:
-     weighting disabled, LiDAR mode, non-database irradiance.
-+27. Free foliar helpers moved from Phase.hpp / Phase.cpp / PhaseVegetation.cpp
-+    into VegetationMaterialWriter.cpp as file-static functions (this session,
-+    owner request): getUnderstoryDirectionSetIndex,
-+    fillFoliarModelMultiplicativeFactors (+ its static helper
-+    fillFoliarModelFaceMultiplicativeFactors), prepareVegetationDirectionSet,
-+    computeLadDataForModel, readBioClimaticFile,
-+    computeAndWriteAverageBioClimaticProfile. Each had VegetationMaterialWriter
-+    as its only caller (verified repo-wide, PhaseOld excluded).
-+    buildFoliarOpticalPropertyParameters STAYS public in PhaseVegetation.cpp:
-+    also called from Phase.cpp createDatabasesReadingProperties(). Dead
-+    declarations removed from Phase.hpp: computeAverageEta and the free
-+    writeFoliar (no definition, no callers -- the writer calls the
-+    FoliarComputation::writeFoliar method). Note: foliarPrecomputing /
-+    numberOfAngularSectors / printNumberOfFoliarModels are still declared in
-+    Phase.hpp and defined in Phase.cpp; their only caller is now the moved
-+    prepareVegetationDirectionSet() -- candidates for a later pass.
-+    readMultiplicativeFactor stays (5 surface call sites in Phase.cpp).
+@@ -352,6 +352,25 @@ Sandbox notes for rebuilding the prefix (no root available):
+     before too: the only caller lived in the vegetation path, which runs
+     only when vegetation models exist (surfaces are processed after, at
+     Phase.cpp:2141 vs 2084). See the MODULE PROGRESS REPORT TODO.
++29. treatSpecular converted into phase::SpecularMaterialWriter (this session):
++    new Phase/include/materials/SpecularMaterialWriter.{hpp,cpp} modeled on
++    RPVMaterialWriter, registered in processSurfaceMaterials for
++    phsdata::SurfaceFunction::Type::Specular (specular entries were previously
++    silently skipped: treatSpecular had no callers). Data now comes from
++    phsdata::Specular: refractiveIndex databaseName + ni/nt model names,
++    roughnessFactor, opticalDepth (tau), materialCharacter, OpticalLink (base
++    BSDF), SpecularNodeMultiplicativeFactorForLUT (ni/nt/opticalDepth/refl/trans
++    factors). Old treatSpecular + computeOpticalPropertiesSpecular deleted from
++    Phase.cpp/Phase.hpp. RPV copy-paste remnants dropped: commented writeRPV
++    call, unused R0/dTauMoy/albedo, v5 updatePropertyForOpticalPropertyInCoeffDiff-
++    XmlFile call, hardcoded temperature DB, useDirectionalDirectTransmittance
++    block (the v6 template removed that attribute). OF texture now
++    "specular<i>OF" via OpticalFactorsTextureWriter (v6 SpecularMultiplicative-
++    FactorForLUT owns an OpticalFactorMatrix subtree) instead of the v5
++    Lambertian "l<i>OF" reuse. Emissivity on the extra simulated bands
++    (Q,U,V / PSI,PSII) is now zero-padded like the other writers (legacy padded
++    with 1). The "notImpementedYet" base-material literal is kept for output
++    parity.
  
  ## Known TODOs / open points (next sessions)
  
+@@ -403,8 +422,8 @@ Sandbox notes for rebuilding the prefix (no root available):
+   iterations: equivalentFront/BackLambertian live in the slot although they
+   are only used within treat() -- could become writer locals.
+ - REFACTOR INTO MaterialWriter CLASSES (same pattern as the Lambertian / Hapke
+-  / RPV writers): treatSpecular (Phase.cpp:1031), treatPhaseExtern
+-  (Phase.cpp:1356), treatMixedMaterial (Phase.cpp:1423).
++  / RPV writers): treatSpecular DONE (item 29, SpecularMaterialWriter); remaining:
++  treatPhaseExtern (Phase.cpp), treatMixedMaterial (Phase.cpp).
+ - DEAD CODE REMOVAL: treatHapke (definition PhaseSurfaces.cpp:10, declaration
+   Phase.hpp:305) has NO callers -- Hapke1981MaterialWriter replaced it;
+   delete it (also check the treatHapke2 declaration, Phase.hpp:332), then
+diff --git a/Phase/CMakeLists.txt b/Phase/CMakeLists.txt
+index bd263e9..f72fcea 100644
+--- a/Phase/CMakeLists.txt
++++ b/Phase/CMakeLists.txt
+@@ -23,6 +23,7 @@ add_executable(phase
+    src/materials/Hapke2012MaterialWriter.cpp
+    src/materials/LambertianMaterialWriter.cpp
+    src/materials/RPVMaterialWriter.cpp
++	src/materials/SpecularMaterialWriter.cpp
+    src/materials/SurfaceMaterialProcessor.cpp
+    src/materials/VegetationMaterialWriter.cpp
+    src/opticalfactors/OpticalFactorsTextureWriter.cpp
 diff --git a/Phase/include/Phase.hpp b/Phase/include/Phase.hpp
-index 1a3b422..942035b 100644
+index 942035b..57e68bd 100644
 --- a/Phase/include/Phase.hpp
 +++ b/Phase/include/Phase.hpp
-@@ -378,50 +378,13 @@ double numberOfAngularSectors(\tconst vector<DirectionCartesienne> & listDirectio
-                                double & solidAnglesSum);
- void printNumberOfFoliarModels();
- void readMultiplicativeFactor(const PhaseGeneralParametersDTO & genDTO);
--void fillFoliarModelMultiplicativeFactors(const phsdata::UnderstoryMulti & understory, FoliarModel & foliarModel);
- FTFoliar foliarPrecomputing(\tconst PhaseGeneralParametersDTO & genDTO,
-                                const vector<DirectionCartesienne> & listDirections,
-                                const unsigned int & iterationStepTheta,
-                                const unsigned int & iterationStepPhi,
-                                const double & solidAnglesSum);
--void computeLadDataForModel(const PhaseGeneralParametersDTO & genDTO,
--				LADComputation & ladComputation,
--				FoliarModel & foliarModel,
--				const phsdata::UnderstoryMulti & understory,
--				const unsigned int & outputModelIndex);
--
--unsigned int getUnderstoryDirectionSetIndex(const PhaseGeneralParametersDTO & genDTO, const unsigned int modelPosition);
--void prepareVegetationDirectionSet(PhaseGeneralParametersDTO & genDTO,
--				FoliarModel & foliarModel,
--				FoliarComputation & foliarComputation,
--				LADComputation & ladComputation,
--				FTFoliar & fTFoliar,
--				const unsigned int directionSetIndex);
- OpticalPropertyParameters buildFoliarOpticalPropertyParameters(const phsdata::UnderstoryMulti & understory, const unsigned int numberOfBands);
- 
--void readBioClimaticFile( 	string bcFilePath,
--							vector<double> & bioClimaticThetaValues,
--							vector<double> & bioClimaticPhiValues,
--							vector<vector<vector<double> > > & bioClimaticProfileEta);
--
--void computeAverageEta(\tconst vector<double> & bioClimaticThetaValues, const vector<double> & bioClimaticPhiValues,
--					 	 	const vector<vector<vector<double>>> & bioClimaticProfileEta, double & average);
--
--void computeAndWriteAverageBioClimaticProfile(\tconst FoliarComputation & foliarCompute,
--												const vector<double> & bioClimaticThetaValues,
--												const vector<double> & bioClimaticPhiValues,
--												const vector<vector<vector<double> > > & bioClimaticProfileEta,
--												ofstream & ofstreamAverageEta);
--
--
--void writeFoliar(\tconst unsigned int& modelIndex,
--					const unsigned int& spectralBandIndex,
--					const std::string & modelName,
+@@ -246,19 +246,6 @@ void computeSpecular(	SpecularData & specularProperty,
+ void writeSpecular(	SpecularData & specularProperty,
+                std::ofstream & outCoeffSpecProperties,
+                PhaseKeyMappingGenerator & pkmg);
+-void treatSpecular(	OpticalPropertyParameters & specularPropertyParameters,
+-					unsigned int opIndex,
+-					std::vector<int> & useSpectralIrradianceForReflectance,
 -					PhaseKeyMappingGenerator & pkmg,
 -					std::ofstream & outCoeffSpecProperties,
--					std::vector<FoliarProperty> & opticalPropertiesVector,
--					FoliarComputation & foliarComputer);
--
- void writeSecondarySourcesOfLight(PhaseGeneralParametersDTO & genDTO, ofstream & outCoeffSpecProperties, const LightsContainer & lightsContainer);
+-					PhaseGeneralParametersDTO & genDTO,
+-					const std::vector<DirectionCartesienne> & listDirections);
+-void computeOpticalPropertiesSpecular(const unsigned int& spectralBandIndex,
+-									OpticalPropertyParameters & specularPropertyParameters,
+-									const std::vector<DirectionCartesienne> & listDirections,
+-									PropertySpecular & specularProperty,
+-									double & albedo,
+-									double & dTauMoy);
  
- //void writeTemperatureProperties(PhaseGeneralParametersDTO & genDTO, ofstream & outCoeffSpecProperties, const std::vector<TemperatureFunction> & temperatureFunctions);
-diff --git a/Phase/src/Phase.cpp b/Phase/src/Phase.cpp
-index d07f8a2..3d69455 100755
+ void processSurfaceMaterials(PhaseGeneralParametersDTO & genDTO,  PhaseKeyMappingGenerator & pkmg, ofstream & outCoeffSpecProperties);
+ 
+diff --git a/Phase/include/materials/SpecularMaterialWriter.hpp b/Phase/include/materials/SpecularMaterialWriter.hpp
+new file mode 100644
+index 0000000..6b9a093
+--- /dev/null

@@ -1,6 +1,0 @@
- VegetationMaterialWriter::VegetationMaterialWriter(	const FluorescenceService & fluorescenceService,
-                        const OpticalFactorsTextureWriter & opticalFactorsWriter) :
-        _fluorescenceService(fluorescenceService), _opticalFactorsWriter(opticalFactorsWriter) {}
--- 
-2.47.3
-
