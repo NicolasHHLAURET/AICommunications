@@ -1,0 +1,18 @@
+ ## Session handoff checklist (for AI agents)
+ 
+@@ -762,3 +817,12 @@ text is emitted more reliably than base64 -- so plain text is the default:
+    `Vibe <vibe@localhost>`) so any deliverable can be regenerated with
+    `git format-patch`; do not rely on /tmp artifacts (stubs, chunks, repair
+    scripts) surviving between messages.
++9. TRANSFER DISCIPLINE under recurring corruption (\"memory panic\", pitfall
++   h): send ONE chunk per message when the owner drives chunk-by-chunk;
++   <= 50 b64 lines per chunk; per-chunk sha256 announced with every chunk;
++   never reassemble/decode until all per-chunk hashes match; on any
++   mismatch repair ONLY the bad lines via `transfer/scripts/fixlines.py`
++   (protocol point 9) -- never resend whole payloads from memory; if a
++   resent chunk is byte-identical to the mangled one, STOP and ask. A b64
++   chunk may alternatively be sent as plain text if the receiver reassembles
++   it on his side.
+-- 
+2.47.3
+
